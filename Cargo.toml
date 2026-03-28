@@ -8,6 +8,7 @@ members = [
   "crates/ml-memphis",
   "crates/ml-cli",
   "crates/ml-p2p",
+  "crates/ml-vm",
 ]
 
 [workspace.package]

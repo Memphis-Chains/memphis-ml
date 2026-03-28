@@ -224,6 +224,14 @@ impl Parser {
 
     fn parse_fn(&mut self) -> Result<MLExpr, ParseError> {
         self.advance(); // consume 'fn'
+        // Check if next token is a name (atom before LParen means named defn)
+        let name = if let Some(TokenKind::Atom) = self.peek() {
+            let n = self.current().unwrap().text.clone();
+            self.advance();
+            Some(n)
+        } else {
+            None
+        };
         self.expect(TokenKind::LParen)?;
         let mut args = Vec::new();
         loop {
@@ -235,7 +243,10 @@ impl Parser {
         }
         let body = Box::new(self.parse_expr()?);
         self.expect(TokenKind::RParen)?;
-        Ok(MLExpr::Fn { args, body })
+        match name {
+            Some(n) => Ok(MLExpr::Defn { name: n, args, body }),
+            None => Ok(MLExpr::Fn { args, body }),
+        }
     }
 
     fn parse_begin(&mut self) -> Result<MLExpr, ParseError> {

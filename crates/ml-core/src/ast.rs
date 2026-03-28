@@ -14,6 +14,8 @@ pub enum MLExpr {
     Number(f64),
     String(String),
     Fn { args: Vec<String>, body: Box<MLExpr> },
+    /// Named function definition: (fn name (args) body) — stored in Runtime::functions
+    Defn { name: String, args: Vec<String>, body: Box<MLExpr> },
     Call { name: String, args: Vec<MLExpr> },
     Set { name: String, value: Box<MLExpr> },
     While { condition: Box<MLExpr>, body: Box<MLExpr> },
@@ -33,6 +35,8 @@ pub enum MLValue {
     Bool(bool),
     Number(f64),
     String(String),
+    /// First-class function: (args, body)
+    Fn(Vec<String>, Box<MLExpr>),
 }
 
 impl MLValue {
@@ -42,6 +46,7 @@ impl MLValue {
             MLValue::Number(n) => Some(*n != 0.0),
             MLValue::String(s) => Some(!s.is_empty()),
             MLValue::Unit => Some(false),
+            MLValue::Fn(..) => Some(true),
         }
     }
 
@@ -49,6 +54,7 @@ impl MLValue {
         match self {
             MLValue::Number(n) => Some(*n),
             MLValue::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
+            MLValue::Fn(..) => Some(1.0),
             _ => None,
         }
     }

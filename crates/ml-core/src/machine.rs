@@ -73,11 +73,13 @@ impl Machine for MlHalMachine {
 pub struct Runtime<M: Machine> {
     pub machine: M,
     vars: HashMap<String, MLValue>,
+    /// Named function definitions: name -> (params, body)
+    functions: HashMap<String, (Vec<String>, MLExpr)>,
 }
 
 impl<M: Machine> Runtime<M> {
     pub fn new(machine: M) -> Self {
-        Self { machine, vars: HashMap::new() }
+        Self { machine, vars: HashMap::new(), functions: HashMap::new() }
     }
 
     pub fn execute(&mut self, expr: MLExpr) -> Result<MLValue, RuntimeError> {
@@ -123,6 +125,7 @@ impl<M: Machine> Runtime<M> {
                     MLValue::Bool(b) => b.to_string(),
                     MLValue::String(s) => s,
                     MLValue::Unit => "()".into(),
+                    MLValue::Fn(..) => "<fn>".into(),
                 };
                 println!("[ML] {}", msg);
                 Ok(MLValue::Unit)
@@ -141,8 +144,48 @@ impl<M: Machine> Runtime<M> {
             MLExpr::Bool(b) => Ok(MLValue::Bool(b)),
             MLExpr::Number(n) => Ok(MLValue::Number(n)),
             MLExpr::String(s) => Ok(MLValue::String(s)),
-            MLExpr::Fn { .. } => Ok(MLValue::Unit), // TODO: functions
-            MLExpr::Call { .. } => Ok(MLValue::Unit), // TODO: calls
+            MLExpr::Fn { args, body } => Ok(MLValue::Fn(args, body)),
+            MLExpr::Defn { name, args, body } => {
+                self.functions.insert(name, (args, *body));
+                Ok(MLValue::Unit)
+            }
+            MLExpr::Call { name, args } => {
+                // Look up the function by name in vars (first-class fn value) or functions map
+                let (params, body) = if let Some(MLValue::Fn(params, body)) = self.vars.get(&name) {
+                    (params.clone(), *body.clone())
+                } else if let Some((params, body)) = self.functions.get(&name) {
+                    (params.clone(), body.clone())
+                } else {
+                    return Err(RuntimeError::UndefinedVariable(format!("function: {}", name)));
+                };
+
+                // Evaluate all args
+                let arg_vals: Vec<MLValue> = args.into_iter()
+                    .map(|a| self.eval(a))
+                    .collect::<Result<Vec<_>, _>>()?;
+
+                // Bind params to arg_vals
+                if arg_vals.len() != params.len() {
+                    return Err(RuntimeError::TypeMismatch(format!(
+                        "function '{}' expects {} args but got {}", name, params.len(), arg_vals.len()
+                    )));
+                }
+
+                let param_names = params.clone();
+                for (param, val) in params.into_iter().zip(arg_vals.into_iter()) {
+                    self.vars.insert(param, val);
+                }
+
+                // Evaluate body and capture result
+                let result = self.eval(body);
+
+                // Remove bound params
+                for param in param_names {
+                    self.vars.remove(&param);
+                }
+
+                result
+            }
             MLExpr::Set { name, value } => {
                 let val = self.eval(*value)?;
                 self.vars.insert(name, val);
@@ -320,6 +363,34 @@ mod tests {
     #[test]
     fn number_val() {
         let r = parse_run("42").unwrap();
+        assert_eq!(r, MLValue::Number(42.0));
+    }
+
+    #[test]
+    fn fn_def_and_call() {
+        // (let add (fn (x y) (+ x y))) (call add 3 5) → 8
+        let r = parse_run("(let add (fn (x y) (+ x y))) (call add 3 5)").unwrap();
+        assert_eq!(r, MLValue::Number(8.0));
+    }
+
+    #[test]
+    fn defn_and_call() {
+        // (fn add (x y) (+ x y)) (call add 3 5) → 8
+        let r = parse_run("(fn add (x y) (+ x y)) (call add 3 5)").unwrap();
+        assert_eq!(r, MLValue::Number(8.0));
+    }
+
+    #[test]
+    fn fn_call_with_expression_arg() {
+        // (call mul 3 (+ 2 5)) where mul multiplies two args → 21
+        let r = parse_run("(fn mul (x y) (* x y)) (call mul 3 (+ 2 5))").unwrap();
+        assert_eq!(r, MLValue::Number(21.0));
+    }
+
+    #[test]
+    fn fn_no_args() {
+        // A function with no args that returns a constant
+        let r = parse_run("(fn answer () 42) (call answer)").unwrap();
         assert_eq!(r, MLValue::Number(42.0));
     }
 }

@@ -2,7 +2,7 @@
 //! 
 //! Executes ML bytecode compiled from AST.
 
-use ml_core::{GateState, Machine, MLExpr, MockMachine, Runtime};
+use ml_core::{Machine, MLExpr, MockMachine};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -224,7 +224,6 @@ pub enum Value {
     String(String),
     List(Vec<Value>),
     Function(Function),
-    NativeFn(NativeFn),
 }
 
 impl Value {
@@ -254,7 +253,6 @@ impl Value {
             Value::String(_) => "String",
             Value::List(_) => "List",
             Value::Function(_) => "Function",
-            Value::NativeFn(_) => "NativeFn",
         }
     }
 }
@@ -267,11 +265,28 @@ pub struct Function {
     pub constants: Vec<Value>,
 }
 
-#[derive(Debug, Clone)]
 pub struct NativeFn {
     pub name: String,
     pub arity: u8,
-    pub fun: Box<dyn Fn(&mut VM) -> Result<Value, VMError> + Send + Sync>,
+    #[allow(dead_code)]
+    fun: Box<dyn Fn(&mut VM) -> Result<Value, VMError> + Send + Sync>,
+}
+
+impl std::fmt::Debug for NativeFn {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("NativeFn")
+            .field("name", &self.name)
+            .field("arity", &self.arity)
+            .finish()
+    }
+}
+
+
+
+impl PartialEq for NativeFn {
+    fn eq(&self, other: &Self) -> bool {
+        self.name == other.name && self.arity == other.arity
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -407,31 +422,44 @@ impl VM {
                 self.stack_push(c);
             }
             OpCode::Pop => {
+                self.pc += 1;
                 self.stack_pop().ok_or(VMError::StackUnderflow { opcode: OpCode::Pop })?;
             }
             OpCode::Dup => {
+                self.pc += 1;
                 let top = self.stack_peek()?.clone();
                 self.stack_push(top);
             }
             OpCode::Const(idx) => {
+                let _ = idx; // suppress warning
+                let idx = self.read_u16()?;
                 let c = self.constants.get(idx as usize)
                     .ok_or(VMError::ConstantBounds { index: idx as usize, max: self.constants.len() })?
                     .clone();
                 self.stack_push(c);
             }
             OpCode::Load(idx) => {
-                let v = self.locals.get(idx as usize)
-                    .ok_or(VMError::LocalBounds { index: idx as usize, max: self.locals.len() })?
+                let _idx = idx;
+                self.pc += 1; // advance past opcode
+                let actual_idx = self.code[self.pc] as usize;
+                self.pc += 1; // advance past index byte
+                let v = self.locals.get(actual_idx)
+                    .ok_or(VMError::LocalBounds { index: actual_idx, max: self.locals.len() })?
                     .clone();
                 self.stack_push(v);
             }
             OpCode::Store(idx) => {
+                let _idx = idx;
+                self.pc += 1; // advance past opcode
+                let actual_idx = self.code[self.pc] as usize;
+                self.pc += 1; // advance past index byte
                 let v = self.stack_pop()
                     .ok_or(VMError::StackUnderflow { opcode: OpCode::Store(idx) })?;
-                if idx as usize >= self.locals.len() {
-                    return Err(VMError::LocalBounds { index: idx as usize, max: self.locals.len() });
+                // Auto-expand locals if needed
+                while self.locals.len() <= actual_idx {
+                    self.locals.push(Value::Unit);
                 }
-                self.locals[idx as usize] = v;
+                self.locals[actual_idx] = v;
             }
             OpCode::LoadArg(idx) => {
                 // Load argument from current frame
@@ -481,13 +509,6 @@ impl VM {
                         // For missing args, leave as Unit
                         self.pc = 0; // Would need function's code start - simplified for now
                     }
-                    Value::NativeFn(ref nf) => {
-                        if arg_count as u8 != nf.arity {
-                            return Err(VMError::ArityMismatch { arg_count: arg_count as usize, arity: nf.arity as usize });
-                        }
-                        let result = (nf.fun)(self)?;
-                        self.stack_push(result);
-                    }
                     _ => return Err(VMError::TypeError { expected: "Function", got: func }),
                 }
             }
@@ -501,21 +522,25 @@ impl VM {
                 return Ok(()); // Don't advance PC
             }
             OpCode::Add => {
+                self.pc += 1;
                 let b = self.pop_number()?;
                 let a = self.pop_number()?;
                 self.stack_push(Value::Number(a + b));
             }
             OpCode::Sub => {
+                self.pc += 1;
                 let b = self.pop_number()?;
                 let a = self.pop_number()?;
                 self.stack_push(Value::Number(a - b));
             }
             OpCode::Mul => {
+                self.pc += 1;
                 let b = self.pop_number()?;
                 let a = self.pop_number()?;
                 self.stack_push(Value::Number(a * b));
             }
             OpCode::Div => {
+                self.pc += 1;
                 let b = self.pop_number()?;
                 let a = self.pop_number()?;
                 if b == 0.0 {
@@ -524,76 +549,91 @@ impl VM {
                 self.stack_push(Value::Number(a / b));
             }
             OpCode::Mod => {
+                self.pc += 1;
                 let b = self.pop_number()?;
                 let a = self.pop_number()?;
                 self.stack_push(Value::Number(a % b));
             }
             OpCode::Eq => {
+                self.pc += 1;
                 let b = self.stack_pop().unwrap_or(Value::Unit);
                 let a = self.stack_pop().unwrap_or(Value::Unit);
                 self.stack_push(Value::Bool(a == b));
             }
             OpCode::Ne => {
+                self.pc += 1;
                 let b = self.stack_pop().unwrap_or(Value::Unit);
                 let a = self.stack_pop().unwrap_or(Value::Unit);
                 self.stack_push(Value::Bool(a != b));
             }
             OpCode::Lt => {
+                self.pc += 1;
                 let b = self.pop_number()?;
                 let a = self.pop_number()?;
                 self.stack_push(Value::Bool(a < b));
             }
             OpCode::Gt => {
+                self.pc += 1;
                 let b = self.pop_number()?;
                 let a = self.pop_number()?;
                 self.stack_push(Value::Bool(a > b));
             }
             OpCode::Le => {
+                self.pc += 1;
                 let b = self.pop_number()?;
                 let a = self.pop_number()?;
                 self.stack_push(Value::Bool(a <= b));
             }
             OpCode::Ge => {
+                self.pc += 1;
                 let b = self.pop_number()?;
                 let a = self.pop_number()?;
                 self.stack_push(Value::Bool(a >= b));
             }
             OpCode::And => {
+                self.pc += 1;
                 let b = self.pop_bool()?;
                 let a = self.pop_bool()?;
                 self.stack_push(Value::Bool(a && b));
             }
             OpCode::Or => {
+                self.pc += 1;
                 let b = self.pop_bool()?;
                 let a = self.pop_bool()?;
                 self.stack_push(Value::Bool(a || b));
             }
             OpCode::Not => {
+                self.pc += 1;
                 let a = self.pop_bool()?;
                 self.stack_push(Value::Bool(!a));
             }
             OpCode::GateOn => {
+                self.pc += 1;
                 let id = self.pop_string()?;
-                self.machine.set_gate(&id, GateState::On)
+                self.machine.set_gate(&id, "on")
                     .map_err(|e| VMError::MachineError(e.to_string()))?;
             }
             OpCode::GateOff => {
+                self.pc += 1;
                 let id = self.pop_string()?;
-                self.machine.set_gate(&id, GateState::Off)
+                self.machine.set_gate(&id, "off")
                     .map_err(|e| VMError::MachineError(e.to_string()))?;
             }
             OpCode::GateToggle => {
+                self.pc += 1;
                 let id = self.pop_string()?;
-                self.machine.set_gate(&id, GateState::Toggle)
+                self.machine.set_gate(&id, "toggle")
                     .map_err(|e| VMError::MachineError(e.to_string()))?;
             }
             OpCode::ReadTemp => {
+                self.pc += 1;
                 let id = self.pop_string()?;
                 let temp = self.machine.read_sensor(&id)
                     .map_err(|e| VMError::MachineError(e.to_string()))?;
                 self.stack_push(Value::Number(temp));
             }
             OpCode::ReadHumidity => {
+                self.pc += 1;
                 let id = self.pop_string()?;
                 // Humidity sensors typically also read via read_sensor
                 let val = self.machine.read_sensor(&id)
@@ -601,18 +641,21 @@ impl VM {
                 self.stack_push(Value::Number(val));
             }
             OpCode::ReadBool => {
+                self.pc += 1;
                 let id = self.pop_string()?;
                 let val = self.machine.read_sensor(&id)
                     .map_err(|e| VMError::MachineError(e.to_string()))?;
                 self.stack_push(Value::Bool(val != 0.0));
             }
             OpCode::Actuate => {
+                self.pc += 1;
                 // Actuate pops a value and an id, sends actuation command
                 let _val = self.stack_pop().unwrap_or(Value::Unit);
                 let _id = self.stack_pop().unwrap_or(Value::Unit);
                 // Actuator implementation would go here
             }
             OpCode::MakeClosure(upvalue_count) => {
+                self.pc += 1;
                 // Create a closure capturing upvalues
                 let _upvalues: Vec<Value> = (0..upvalue_count)
                     .map(|_| self.stack_pop().unwrap_or(Value::Unit))
@@ -628,7 +671,7 @@ impl VM {
             }
             OpCode::Halt => {
                 let result = self.stack_pop().unwrap_or(Value::Unit);
-                return Err(VMError::InvalidBytecode(format!("Halt should not be in normal execution path")));
+                return Ok(());
             }
             OpCode::Push => {
                 // Already handled above - this branch is unreachable but compiler doesn't know
@@ -891,10 +934,10 @@ impl Compiler {
             }
             MLExpr::Gate { id, state } => {
                 self.emit_const(Value::String(id.clone()));
-                match state {
-                    GateState::On => self.emit(OpCode::GateOn),
-                    GateState::Off => self.emit(OpCode::GateOff),
-                    GateState::Toggle => self.emit(OpCode::GateToggle),
+                match state.as_str() {
+                    "on" => self.emit(OpCode::GateOn),
+                    "off" => self.emit(OpCode::GateOff),
+                    _ => self.emit(OpCode::GateToggle),
                 }
             }
             MLExpr::Read { sensor } => {
@@ -906,10 +949,10 @@ impl Compiler {
                 self.emit_const(Value::Number(*ms as f64));
                 self.emit(OpCode::Pop); // consume the ms value
             }
-            MLExpr::Log { message } => {
-                // Log is not directly supported; could be a native function
-                self.emit_const(Value::String(message.clone()));
-                self.emit(OpCode::Pop); // consume the message
+            MLExpr::Log { .. } => {
+                // Log: compile the message expression, then pop the result (VM doesn't support log natively)
+                // For now, just emit a placeholder
+                self.emit(OpCode::Pop);
             }
             MLExpr::Fn { args, body } => {
                 // Compile function into a nested CompiledModule
@@ -928,6 +971,24 @@ impl Compiler {
                 };
                 
                 self.emit_const(Value::Function(func));
+            }
+            MLExpr::Defn { name, args, body } => {
+                // Named function — compile and store
+                let mut func_compiler = Self::new();
+                for arg in args.iter().cloned() {
+                    func_compiler.push_local(arg);
+                }
+                func_compiler.compile_expr(body)?;
+                func_compiler.emit(OpCode::Return);
+                
+                let func = Function {
+                    arity: args.len() as u8,
+                    locals: args.len(),
+                    code: func_compiler.code,
+                    constants: func_compiler.constants,
+                };
+                self.functions.insert(name.clone(), func);
+                self.emit_const(Value::Unit); // defn returns unit
             }
             MLExpr::Call { name, args } => {
                 // Push arguments
@@ -1066,6 +1127,9 @@ mod tests {
     fn test_vm(source: &str, expected: Value) {
         let ast = MLExpr::parse(source).expect("parse failed");
         let module = Compiler::compile(&ast).expect("compile failed");
+        eprintln!("vm source: {}", source);
+        eprintln!("vm bytecode: {:02x?}", module.code);
+        eprintln!("vm constants: {:?}", module.constants);
         
         #[cfg(feature = "disasm")]
         {
@@ -1085,6 +1149,10 @@ mod tests {
     
     #[test]
     fn test_number() {
+        let ast = ml_core::MLExpr::parse("42").unwrap();
+        let module = Compiler::compile(&ast).unwrap();
+        eprintln!("compile code: {:02x?}", module.code);
+        eprintln!("compile constants: {:?}", module.constants);
         test_vm("42", Value::Number(42.0));
     }
     
@@ -1137,7 +1205,15 @@ mod tests {
     
     #[test]
     fn test_let() {
-        test_vm("(let x 10 (+ x 5))", Value::Number(15.0));
+        let source = "(let x 10 (+ x 5))";
+        let ast = ml_core::MLExpr::parse(source).unwrap();
+        let module = Compiler::compile(&ast).unwrap();
+        eprintln!("test_let bytecode: {:02x?}", module.code);
+        let machine = Box::new(MockMachine::new());
+        let mut vm = VM::new(machine, module);
+        let result = vm.run();
+        eprintln!("test_let result: {:?}", result);
+        test_vm(source, Value::Number(15.0));
     }
     
     #[test]

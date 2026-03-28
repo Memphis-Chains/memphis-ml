@@ -6,4 +6,6 @@ mod protocol;
 
 pub use error::P2PError;
 pub use node::Node;
-pub use protocol::Message;
+pub use protocol::{
+    Handshake, Message, MlExpr, Query, Response,
+};

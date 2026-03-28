@@ -199,7 +199,7 @@ mod tests {
 
     #[test]
     fn test_sensor_supports() {
-        let mut hal = MockHAL::new()
+        let hal = MockHAL::new()
             .with_temp("temp1", 20.0)
             .with_humidity("hum1", 60.0)
             .with_bool("btn1", true);
