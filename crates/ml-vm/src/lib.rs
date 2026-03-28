@@ -404,6 +404,7 @@ impl VM {
     
     fn fetch(&mut self) -> Result<OpCode, VMError> {
         if self.pc >= self.code.len() {
+            self.pc = self.code.len() + 1; // prevent infinite loop
             return Ok(OpCode::Halt);
         }
         let byte = self.code[self.pc];
@@ -670,7 +671,7 @@ impl VM {
                 self.stack_push(Value::Function(func));
             }
             OpCode::Halt => {
-                let result = self.stack_pop().unwrap_or(Value::Unit);
+                self.pc = self.code.len() + 1; // force exit on next fetch
                 return Ok(());
             }
             OpCode::Push => {

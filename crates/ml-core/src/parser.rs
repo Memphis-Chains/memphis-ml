@@ -88,6 +88,7 @@ impl Parser {
             TokenKind::If => self.parse_if(),
             TokenKind::While => self.parse_while(),
             TokenKind::Fn => self.parse_fn(),
+            TokenKind::Call => self.parse_call(),
             TokenKind::Begin => self.parse_begin(),
             TokenKind::Plus | TokenKind::Minus | TokenKind::Star | TokenKind::Slash
             | TokenKind::Percent | TokenKind::Eq | TokenKind::Neq
@@ -188,7 +189,14 @@ impl Parser {
             t => return Err(ParseError::UnexpectedToken(t.text)),
         };
         let value = Box::new(self.parse_expr()?);
-        let body = Box::new(self.parse_expr()?);
+        // Body is optional: if next token is RParen, use Unit as body
+        let body = if let Some(TokenKind::RParen) = self.peek() {
+            // No body provided — use a Number(0.0) which evaluates to MLValue::Unit-like
+            // (it's just discarded in the let result anyway)
+            Box::new(MLExpr::Number(0.0))
+        } else {
+            Box::new(self.parse_expr()?)
+        };
         self.expect(TokenKind::RParen)?;
         Ok(MLExpr::Let { name, value, body })
     }
@@ -258,6 +266,21 @@ impl Parser {
             exprs.push(self.parse_expr()?);
         }
         Ok(MLExpr::Begin(exprs))
+    }
+
+    fn parse_call(&mut self) -> Result<MLExpr, ParseError> {
+        self.advance(); // consume 'call'
+        let name = match self.current().cloned().ok_or(ParseError::UnexpectedEof)? {
+            Token { kind: TokenKind::Atom, text } => { self.advance(); text }
+            t => return Err(ParseError::UnexpectedToken(t.text)),
+        };
+        let mut args = Vec::new();
+        loop {
+            if let Some(TokenKind::RParen) = self.peek() { self.advance(); break; }
+            if self.peek() == None { return Err(ParseError::UnclosedParen); }
+            args.push(self.parse_expr()?);
+        }
+        Ok(MLExpr::Call { name, args })
     }
 }
 

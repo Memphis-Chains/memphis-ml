@@ -132,6 +132,11 @@ impl<M: Machine> Runtime<M> {
             }
             MLExpr::Let { name, value, body } => {
                 let val = self.eval(*value)?;
+                // If the value is a function, also register it in self.functions
+                // so it persists after the let binding goes out of scope
+                if let MLValue::Fn(params, fn_body) = &val {
+                    self.functions.insert(name.clone(), (params.clone(), *fn_body.clone()));
+                }
                 self.vars.insert(name.clone(), val);
                 let result = self.eval(*body)?;
                 self.vars.remove(&name);
