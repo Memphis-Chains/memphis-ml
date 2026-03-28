@@ -1,10 +1,13 @@
 //! Simple Bytecode VM for Memphis Language (ML)
-//! Clean implementation with correct PC management.
 //!
-//! PC Management rules:
-//! - fetch() reads opcode at pc, advances pc past it
-//! - Multi-byte opcodes (Const, Load, Store, Jmp) read operands in execute(), advance pc past them
-//! - Single-byte opcodes do NOT advance pc in execute (fetch already did)
+//! PC Management (SIMPLE model):
+//! - fetch(): reads byte at pc, advances pc by 1
+//! - execute(): reads operands, advances pc PAST the instruction
+//! - For Const/Load/Store: pc advances past opcode (1) + operand (2) = 3 bytes total
+//! - For Jmp/JmpIf/JmpIfNot: pc advances past opcode (1) + offset (2) = 3 bytes total
+//!   Then sets pc = offset (absolute target)
+//! - For Halt: sets pc = code.len() (forces exit on next fetch)
+//! - Single-byte opcodes: fetch() already advanced pc; execute() does nothing else
 
 use crate::{VMError, OpCode, Value};
 
@@ -22,7 +25,7 @@ impl VM {
             code,
             constants,
             stack: Vec::new(),
-            locals: vec![Value::Unit; 32], // pre-allocated locals
+            locals: vec![Value::Unit; 32],
             pc: 0,
         }
     }
@@ -52,19 +55,18 @@ impl VM {
     fn pop(&mut self) -> Result<Value, VMError> {
         self.stack.pop().ok_or(VMError::StackUnderflow { opcode: OpCode::Halt })
     }
-    fn pop_number(&mut self) -> Result<f64, VMError> {
-        match self.stack.pop() {
-            Some(Value::Number(n)) => Ok(n),
-            Some(v) => Err(VMError::TypeError { expected: "Number", got: v }),
-            None => Err(VMError::TypeError { expected: "Number", got: Value::Unit }),
+    fn pop_number(&self) -> Result<f64, VMError> {
+        match self.stack.last() {
+            Some(Value::Number(n)) => Ok(*n),
+            Some(Value::Bool(b)) => Ok(if *b { 1.0 } else { 0.0 }),
+            _ => Err(VMError::TypeError { expected: "Number", got: Value::Unit }),
         }
     }
-    fn pop_bool(&mut self) -> Result<bool, VMError> {
-        match self.stack.pop() {
-            Some(Value::Bool(b)) => Ok(b),
-            Some(Value::Number(n)) => Ok(n != 0.0),
-            Some(v) => Err(VMError::TypeError { expected: "Bool", got: v }),
-            None => Err(VMError::TypeError { expected: "Bool", got: Value::Unit }),
+    fn pop_bool(&self) -> Result<bool, VMError> {
+        match self.stack.last() {
+            Some(Value::Bool(b)) => Ok(*b),
+            Some(Value::Number(n)) => Ok(*n != 0.0),
+            _ => Err(VMError::TypeError { expected: "Bool", got: Value::Unit }),
         }
     }
 
@@ -85,19 +87,23 @@ impl VM {
 
     fn execute(&mut self, op: OpCode) -> Result<(), VMError> {
         match op {
-            OpCode::Halt => return Ok(()),
+            OpCode::Halt => {
+                // Set pc past end to force exit on next iteration
+                self.pc = self.code.len() + 1;
+                return Ok(());
+            }
 
-            OpCode::Const(idx_hint) => {
-                // idx_hint is ignored; read actual index
+            OpCode::Const(_) => {
+                // Already advanced past opcode (1 byte), now read index (2 bytes)
                 let idx = self.read_u16()? as usize;
                 let c = self.constants.get(idx)
                     .ok_or(VMError::ConstantBounds { index: idx, max: self.constants.len() })?
                     .clone();
                 self.stack.push(c);
+                // pc is now at next instruction (after 1 opcode + 2 index)
             }
 
             OpCode::Push => {
-                // Push reads next u16 as constant index
                 let idx = self.read_u16()? as usize;
                 let c = self.constants.get(idx)
                     .ok_or(VMError::ConstantBounds { index: idx, max: self.constants.len() })?
@@ -105,7 +111,7 @@ impl VM {
                 self.stack.push(c);
             }
 
-            OpCode::Load(idx_hint) => {
+            OpCode::Load(_) => {
                 let idx = self.read_byte()? as usize;
                 let v = self.locals.get(idx)
                     .ok_or(VMError::LocalBounds { index: idx, max: self.locals.len() })?
@@ -113,10 +119,9 @@ impl VM {
                 self.stack.push(v);
             }
 
-            OpCode::Store(idx_hint) => {
+            OpCode::Store(_) => {
                 let idx = self.read_byte()? as usize;
                 let v = self.pop()?;
-                // Auto-expand locals if needed
                 while self.locals.len() <= idx {
                     self.locals.push(Value::Unit);
                 }
@@ -133,24 +138,51 @@ impl VM {
                 }
             }
 
-            OpCode::Jmp(offset_hint) => {
-                let offset = self.read_u16()? as i32;
-                self.pc = ((self.pc as i32) + offset - 3) as usize;
+            OpCode::Jmp(_) => {
+                // pc already advanced past opcode (1 byte)
+                // Read offset (2 bytes) — this positions pc at end of instruction
+                let _offset = self.read_u16()?;
+                // _offset is the absolute target byte position
+                // No adjustment needed — just set pc = _offset
+                // But wait: we need to add back the 2 bytes we just "read past"
+                // Actually: pc is at position AFTER the 2 offset bytes
+                // We want pc to be at the offset value itself
+                // Since we already advanced pc by 2 (read_u16), we need:
+                // pc = _offset (the target position in the bytecode)
+                // But pc is currently at offset_end = patch_offset + 3
+                // So: new_pc = _offset (absolute)
+                // But we need: new_pc = _offset + (pc - (offset_end))
+                // = _offset + (current_pc - (patch_offset + 3))
+                // This is getting complicated...
+                
+                // SIMPLE APPROACH: the bytecode encodes RELATIVE offset from current pc
+                // offset = target - (pc after instruction)
+                // new_pc = pc + offset = pc + (target - pc) = target ✓
+                //
+                // The bytecode encodes: offset = target - (patch_offset + 3)
+                // VM: pc += offset (where offset is read from bytecode)
+                // new_pc = (patch_offset + 3) + offset = patch_offset + 3 + (target - patch_offset - 3) = target ✓
+                //
+                // Current: pc is at patch_offset + 3 (after reading 3 bytes)
+                // offset = bytecode_value (relative from pc after instruction)
+                // new_pc = pc + offset
+                self.pc = ((self.pc as i32) + (_offset as i32)) as usize;
             }
 
-            OpCode::JmpIf(offset_hint) => {
-                let offset = self.read_u16()? as i32;
+            OpCode::JmpIf(_) => {
+                let _offset = self.read_u16()?;
                 let cond = self.pop_bool()?;
                 if cond {
-                    self.pc = ((self.pc as i32) + offset - 3) as usize;
+                    // Same as Jmp: pc += offset
+                    self.pc = ((self.pc as i32) + (_offset as i32)) as usize;
                 }
             }
 
-            OpCode::JmpIfNot(offset_hint) => {
-                let offset = self.read_u16()? as i32;
+            OpCode::JmpIfNot(_) => {
+                let _offset = self.read_u16()?;
                 let cond = self.pop_bool()?;
                 if !cond {
-                    self.pc = ((self.pc as i32) + offset - 3) as usize;
+                    self.pc = ((self.pc as i32) + (_offset as i32)) as usize;
                 }
             }
 
@@ -230,33 +262,16 @@ impl VM {
                 self.stack.push(Value::Bool(!a));
             }
 
-            OpCode::GateOn => {
-                // GateOn: pops id, sets gate on
-                // For now: no-op or error
-            }
-            OpCode::GateOff => {}
-            OpCode::GateToggle => {}
-            OpCode::ReadTemp => {
-                self.stack.push(Value::Number(22.0)); // mock
-            }
-            OpCode::ReadHumidity => {
-                self.stack.push(Value::Number(50.0)); // mock
-            }
-            OpCode::ReadBool => {
-                self.stack.push(Value::Bool(false)); // mock
-            }
-            OpCode::Actuate => {
-                self.stack.pop(); self.stack.pop(); // pop value and id
-            }
-            OpCode::MakeClosure(_) => {
-                self.stack.push(Value::Unit);
-            }
+            OpCode::GateOn | OpCode::GateOff | OpCode::GateToggle => {}
+            OpCode::ReadTemp => { self.stack.push(Value::Number(22.0)); }
+            OpCode::ReadHumidity => { self.stack.push(Value::Number(50.0)); }
+            OpCode::ReadBool => { self.stack.push(Value::Bool(false)); }
+            OpCode::Actuate => { self.stack.pop(); self.stack.pop(); }
+            OpCode::MakeClosure(_) => { self.stack.push(Value::Unit); }
             OpCode::Call(_, _) => {
-                return Err(VMError::InvalidBytecode("Call not implemented in simple VM".into()));
+                return Err(VMError::InvalidBytecode("Call not implemented".into()));
             }
-            OpCode::LoadArg(_) => {
-                self.stack.push(Value::Unit);
-            }
+            OpCode::LoadArg(_) => { self.stack.push(Value::Unit); }
         }
         Ok(())
     }

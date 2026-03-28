@@ -325,9 +325,15 @@ impl Compiler {
         compiler.compile_expr(ast)?;
         compiler.emit(OpCode::Halt);
         
+        // Patch all jump offsets (convert absolute target to relative offset)
         // Patch all jump offsets
+        // For our 3-byte jump instructions: opcode at patch_offset, offset bytes at patch_offset+1,2
+        // VM reads offset from bytes[pc] and bytes[pc+1], then does pc += offset
+        // After fetch+read_u16, pc = patch_offset + 3
+        // offset = target - pc = target - (patch_offset + 3)
+        // But we write offset at patch_offset+1, patch_offset+2
         for (patch_offset, target_offset) in &compiler.patch_jumps {
-            let offset = *target_offset as u16;
+            let offset = ((*target_offset as isize) - (*patch_offset as isize + 3)) as u16;
             compiler.code[*patch_offset] = (offset >> 8) as u8;
             compiler.code[*patch_offset + 1] = offset as u8;
         }
@@ -378,10 +384,10 @@ impl Compiler {
         self.emit(OpCode::Const(idx));
     }
     
-    fn emit_jump(&mut self, target_offset: usize) -> usize {
+    fn emit_jump(&mut self, _target_offset: usize) -> usize {
         let patch_offset = self.code.len();
         self.emit(OpCode::Jmp(0)); // placeholder
-        self.patch_jumps.push((patch_offset, target_offset));
+        self.patch_jumps.push((patch_offset, 0)); // placeholder
         patch_offset
     }
     
@@ -392,14 +398,14 @@ impl Compiler {
         } else {
             self.emit(OpCode::JmpIfNot(0));
         }
-        self.patch_jumps.push((patch_offset, 0)); // target filled later
+        self.patch_jumps.push((patch_offset, 0)); // placeholder
         patch_offset
     }
     
     fn patch_jump(&mut self, patch_offset: usize, target_offset: usize) {
-        if let Some((existing_patch, _)) = self.patch_jumps.iter().find(|(p, _)| *p == patch_offset) {
-            self.patch_jumps.retain(|(p, _)| *p != patch_offset);
-        }
+        // Remove any existing entry for this patch_offset (placeholder)
+        self.patch_jumps.retain(|(p, _)| *p != patch_offset);
+        // Store (patch_offset, target) for the patching loop
         self.patch_jumps.push((patch_offset, target_offset));
     }
     
@@ -469,27 +475,28 @@ impl Compiler {
                 }
             }
             MLExpr::If { condition, then_branch, else_ } => {
-                let else_offset = self.code.len() + 6; // approximate, will be patched
-                
-                // Compile condition (for now just compile then_branch and use JmpIfNot)
-                self.compile_expr(then_branch)?;
+                // Compile condition
+                self.compile_expr(condition)?;
+                // If false, jump to else
                 let patch_else = self.emit_jump_if(false);
                 
-                // Then branch is on stack
-                // Jump past else
-                let end_patch = self.emit_jump(0); // placeholder
+                // Compile then_branch
+                self.compile_expr(then_branch)?;
+                // Jump past else (to end)
+                let patch_end = self.emit_jump(0);
                 
-                // Patch the else jump to here
+                // Patch else jump to here (start of else branch)
                 let else_target = self.code.len();
                 self.patch_jump(patch_else, else_target);
                 
+                // Compile else_branch if present
                 if let Some(else_branch) = else_ {
                     self.compile_expr(else_branch)?;
                 }
                 
-                // Patch end jump
-                let end_target = self.code.len();
-                self.patch_jump(end_patch, end_target);
+                // end_target = current position (else branch end) + 1 for Halt
+                let end_target = self.code.len() + 1;
+                self.patch_jump(patch_end, end_target);
             }
             MLExpr::While { condition, body } => {
                 let loop_start = self.code.len();
