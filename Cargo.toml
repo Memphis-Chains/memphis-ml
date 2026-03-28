@@ -6,6 +6,7 @@ members = [
   "crates/ml-hw-gpio",
   "crates/ml-hw-http",
   "crates/ml-memphis",
+  "crates/ml-cli",
 ]
 
 [workspace.package]

@@ -1,1 +1,5 @@
-*.rs\ntarget/
+target/
+Cargo.lock
+*.pdb
+*.rlib
+*.so
