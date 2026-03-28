@@ -424,7 +424,7 @@ mod tests {
             let _hs: Handshake = serde_json::from_slice(&data).unwrap();
 
             // Respond with handshake
-            let resp = Handshake::new("server-1".into(), addr.clone());
+            let resp = Handshake::new("server-1".into(), addr_clone.clone());
             let resp_bytes = serde_json::to_vec(&resp).unwrap();
             let mut frame = BytesMut::with_capacity(4 + resp_bytes.len());
             frame.put_u32(resp_bytes.len() as u32);

@@ -87,8 +87,8 @@ impl Parser {
             TokenKind::Set => self.parse_set(),
             TokenKind::If => self.parse_if(),
             TokenKind::While => self.parse_while(),
-            TokenKind::Fn => self.parse_fn(),
             TokenKind::Call => self.parse_call(),
+            TokenKind::Fn => self.parse_fn(),
             TokenKind::Begin => self.parse_begin(),
             TokenKind::Plus | TokenKind::Minus | TokenKind::Star | TokenKind::Slash
             | TokenKind::Percent | TokenKind::Eq | TokenKind::Neq
