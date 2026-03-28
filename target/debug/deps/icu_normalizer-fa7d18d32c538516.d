@@ -1,0 +1,8 @@
+/home/memphis_ai_brain_on_chain/ml/target/debug/deps/icu_normalizer-fa7d18d32c538516.d: /home/memphis_ai_brain_on_chain/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.1.1/src/lib.rs /home/memphis_ai_brain_on_chain/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.1.1/src/properties.rs /home/memphis_ai_brain_on_chain/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.1.1/src/provider.rs /home/memphis_ai_brain_on_chain/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.1.1/src/uts46.rs
+
+/home/memphis_ai_brain_on_chain/ml/target/debug/deps/libicu_normalizer-fa7d18d32c538516.rmeta: /home/memphis_ai_brain_on_chain/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.1.1/src/lib.rs /home/memphis_ai_brain_on_chain/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.1.1/src/properties.rs /home/memphis_ai_brain_on_chain/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.1.1/src/provider.rs /home/memphis_ai_brain_on_chain/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.1.1/src/uts46.rs
+
+/home/memphis_ai_brain_on_chain/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.1.1/src/lib.rs:
+/home/memphis_ai_brain_on_chain/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.1.1/src/properties.rs:
+/home/memphis_ai_brain_on_chain/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.1.1/src/provider.rs:
+/home/memphis_ai_brain_on_chain/.cargo/registry/src/index.crates.io-1949cf8c6b5b557f/icu_normalizer-2.1.1/src/uts46.rs:

@@ -1,9 +1,8 @@
-// ML-Core Parser — recursive descent dla ML
-// Obsługuje: gate, read, if, wait, log, let, sekwencje
+// ML-Core Parser — minimal recursive descent
 
-use crate::ast::*;
-use crate::lexer::{tokenize, Token, TokenKind};
+use crate::ast::MLExpr;
 use crate::error::ParseError;
+use crate::lexer::{tokenize, Token, TokenKind};
 
 pub struct Parser {
     tokens: Vec<Token>,
@@ -12,258 +11,242 @@ pub struct Parser {
 
 impl Parser {
     pub fn new(source: &str) -> Self {
-        let tokens = tokenize(source);
-        Parser { tokens, pos: 0 }
+        Self { tokens: tokenize(source), pos: 0 }
     }
 
     pub fn parse(&mut self) -> Result<MLExpr, ParseError> {
-        self.parse_sequence()
+        let first = self.parse_expr()?;
+        // If there's more after this (ignoring EOF), collect into Sequence
+        if self.pos < self.tokens.len() - 1 {
+            let mut exprs = vec![first];
+            while self.pos < self.tokens.len() - 1 {
+                exprs.push(self.parse_expr()?);
+            }
+            Ok(MLExpr::Sequence(exprs))
+        } else {
+            Ok(first)
+        }
     }
 
-    fn current(&self) -> Option<&Token> {
-        self.tokens.get(self.pos)
-    }
+    fn current(&self) -> Option<&Token> { self.tokens.get(self.pos) }
 
-    fn advance(&mut self) {
-        self.pos += 1;
-    }
+    fn advance(&mut self) { if self.pos < self.tokens.len() { self.pos += 1; } }
 
     fn expect(&mut self, kind: TokenKind) -> Result<Token, ParseError> {
         let tok = self.current().cloned().ok_or(ParseError::UnexpectedEof)?;
-        if tok.kind != kind {
-            return Err(ParseError::UnexpectedToken(format!(
-                "expected {:?}, got {:?}", kind, tok.kind
-            )));
-        }
-        self.advance();
-        Ok(tok)
+        if tok.kind == kind { self.advance(); Ok(tok) }
+        else { Err(ParseError::UnexpectedToken(tok.text)) }
     }
 
-    fn at(&self, kind: TokenKind) -> bool {
-        self.current().map(|t| t.kind == kind).unwrap_or(false)
-    }
-
-    fn parse_sequence(&mut self) -> Result<MLExpr, ParseError> {
-        let mut exprs = Vec::new();
-        while !self.at(TokenKind::Eof) {
-            exprs.push(self.parse_expr()?);
-        }
-        if exprs.is_empty() {
-            return Err(ParseError::EmptyExpr);
-        }
-        if exprs.len() == 1 {
-            Ok(exprs.remove(0))
-        } else {
-            Ok(MLExpr::Sequence(exprs))
-        }
-    }
+    fn peek(&self) -> Option<TokenKind> { self.current().map(|t| t.kind) }
 
     fn parse_expr(&mut self) -> Result<MLExpr, ParseError> {
-        let tok = self.current().ok_or(ParseError::UnexpectedEof)?.clone();
+        let tok = self.current().cloned().ok_or(ParseError::UnexpectedEof)?;
         match tok.kind {
-            TokenKind::LParen => self.parse_list(),
-            TokenKind::Atom => {
-                self.advance();
-                Ok(MLExpr::Var(tok.text))
-            }
-            TokenKind::String => {
-                self.advance();
-                let s = tok.text.trim_matches('"');
-                Ok(MLExpr::String(s.to_string()))
-            }
             TokenKind::Number => {
                 self.advance();
                 let n: f64 = tok.text.parse().map_err(|_| ParseError::InvalidNumber(tok.text))?;
                 Ok(MLExpr::Number(n))
             }
+            TokenKind::String => {
+                self.advance();
+                let s = tok.text.trim_matches('"').to_string();
+                Ok(MLExpr::String(s))
+            }
             TokenKind::True => { self.advance(); Ok(MLExpr::Bool(true)) }
             TokenKind::False => { self.advance(); Ok(MLExpr::Bool(false)) }
-            _ => Err(ParseError::UnexpectedToken(format!("{:?}", tok.kind))),
+            TokenKind::Atom => { self.advance(); Ok(MLExpr::Var(tok.text)) }
+            TokenKind::LParen => self.parse_list(),
+            TokenKind::LBracket => self.parse_sequence(),
+            _ => Err(ParseError::UnexpectedToken(tok.text)),
         }
+    }
+
+    fn parse_sequence(&mut self) -> Result<MLExpr, ParseError> {
+        self.advance(); // consume '['
+        let mut exprs = Vec::new();
+        loop {
+            match self.peek() {
+                Some(TokenKind::RBracket) | None => break,
+                _ => exprs.push(self.parse_expr()?),
+            }
+        }
+        self.expect(TokenKind::RBracket)?;
+        Ok(MLExpr::Sequence(exprs))
     }
 
     fn parse_list(&mut self) -> Result<MLExpr, ParseError> {
-        self.expect(TokenKind::LParen)?;
-        let head = self.current().ok_or(ParseError::UnexpectedEof)?.clone();
-        self.advance();
-
-        match head.kind {
+        self.advance(); // consume '('
+        let kind = self.peek().ok_or(ParseError::UnexpectedEof)?;
+        match kind {
             TokenKind::Gate => self.parse_gate(),
             TokenKind::Read => self.parse_read(),
-            TokenKind::If => self.parse_if(),
             TokenKind::Wait => self.parse_wait(),
             TokenKind::Log => self.parse_log(),
             TokenKind::Let => self.parse_let(),
-            _ => self.parse_sequence_inside_paren(),
+            TokenKind::Set => self.parse_set(),
+            TokenKind::If => self.parse_if(),
+            TokenKind::While => self.parse_while(),
+            TokenKind::Fn => self.parse_fn(),
+            TokenKind::Begin => self.parse_begin(),
+            TokenKind::Plus | TokenKind::Minus | TokenKind::Star | TokenKind::Slash
+            | TokenKind::Percent | TokenKind::Eq | TokenKind::Neq
+            | TokenKind::Gt | TokenKind::Lt | TokenKind::Gte | TokenKind::Lte
+            | TokenKind::And | TokenKind::Or | TokenKind::Not => self.parse_binary_op(),
+            TokenKind::Atom => {
+                let name = self.current().unwrap().text.clone();
+                self.advance();
+                let mut args = Vec::new();
+                loop {
+                    if let Some(TokenKind::RParen) = self.peek() { self.advance(); break; }
+                    if self.peek() == None { return Err(ParseError::UnclosedParen); }
+                    args.push(self.parse_expr()?);
+                }
+                Ok(MLExpr::Call { name, args })
+            }
+            _ => Err(ParseError::UnexpectedToken(self.current().unwrap().text.clone())),
         }
     }
 
-    fn parse_sequence_inside_paren(&mut self) -> Result<MLExpr, ParseError> {
-        let mut exprs = Vec::new();
-        while !self.at(TokenKind::RParen) && !self.at(TokenKind::Eof) {
-            exprs.push(self.parse_expr()?);
-        }
+    fn parse_binary_op(&mut self) -> Result<MLExpr, ParseError> {
+        let op = match self.current().cloned().ok_or(ParseError::UnexpectedEof)?.kind {
+            TokenKind::Plus => "+".into(),
+            TokenKind::Minus => "-".into(),
+            TokenKind::Star => "*".into(),
+            TokenKind::Slash => "/".into(),
+            TokenKind::Percent => "%".into(),
+            TokenKind::Eq => "==".into(),
+            TokenKind::Neq => "!=".into(),
+            TokenKind::Gt => ">".into(),
+            TokenKind::Lt => "<".into(),
+            TokenKind::Gte => ">=".into(),
+            TokenKind::Lte => "<=".into(),
+            TokenKind::And => "and".into(),
+            TokenKind::Or => "or".into(),
+            TokenKind::Not => "not".into(),
+            _ => return Err(ParseError::UnexpectedToken(self.current().unwrap().text.clone())),
+        };
+        self.advance();
+        let left = Box::new(self.parse_expr()?);
+        let right = Box::new(self.parse_expr()?);
         self.expect(TokenKind::RParen)?;
-        if exprs.is_empty() {
-            return Err(ParseError::EmptyExpr);
-        }
-        if exprs.len() == 1 {
-            Ok(exprs.remove(0))
-        } else {
-            Ok(MLExpr::Sequence(exprs))
-        }
+        Ok(MLExpr::BinaryOp { op, left, right })
     }
 
     fn parse_gate(&mut self) -> Result<MLExpr, ParseError> {
-        let id = self.expect(TokenKind::Atom)?.text.clone();
-        let state = if self.at(TokenKind::On) {
-            self.advance();
-            GateState::On
-        } else if self.at(TokenKind::Off) {
-            self.advance();
-            GateState::Off
-        } else if self.at(TokenKind::Toggle) {
-            self.advance();
-            GateState::Toggle
-        } else {
-            return Err(ParseError::UnexpectedToken("on/off/toggle".to_string()));
+        self.advance(); // consume 'gate'
+        let id = match self.current().cloned().ok_or(ParseError::UnexpectedEof)? {
+            Token { kind: TokenKind::Atom, text } => { self.advance(); text }
+            t => return Err(ParseError::UnexpectedToken(t.text)),
+        };
+        let state = match self.current().cloned().ok_or(ParseError::UnexpectedEof)?.kind {
+            TokenKind::On => { self.advance(); "on".into() }
+            TokenKind::Off => { self.advance(); "off".into() }
+            TokenKind::Toggle => { self.advance(); "toggle".into() }
+            _ => return Err(ParseError::UnexpectedToken(self.current().unwrap().text.clone())),
         };
         self.expect(TokenKind::RParen)?;
         Ok(MLExpr::Gate { id, state })
     }
 
     fn parse_read(&mut self) -> Result<MLExpr, ParseError> {
-        let sensor = self.expect(TokenKind::Atom)?.text.clone();
+        self.advance(); // consume 'read'
+        let sensor = match self.current().cloned().ok_or(ParseError::UnexpectedEof)? {
+            Token { kind: TokenKind::Atom, text } => { self.advance(); text }
+            t => return Err(ParseError::UnexpectedToken(t.text)),
+        };
         self.expect(TokenKind::RParen)?;
         Ok(MLExpr::Read { sensor })
     }
 
-    fn parse_if(&mut self) -> Result<MLExpr, ParseError> {
-        let condition = self.parse_condition()?;
-        let then_branch = self.parse_expr()?;
-        let else_branch = if self.at(TokenKind::Else) {
-            self.advance();
-            Some(Box::new(self.parse_expr()?))
-        } else {
-            None
-        };
-        self.expect(TokenKind::RParen)?;
-        Ok(MLExpr::If { condition, then_branch: Box::new(then_branch), else_: else_branch })
-    }
-
-    fn parse_condition(&mut self) -> Result<Condition, ParseError> {
-        let tok = self.current().ok_or(ParseError::UnexpectedEof)?.clone();
-        match tok.kind {
-            TokenKind::True => { self.advance(); Ok(Condition::Bool(true)) }
-            TokenKind::False => { self.advance(); Ok(Condition::Bool(false)) }
-            TokenKind::Not => {
-                self.advance();
-                let inner = Box::new(self.parse_condition()?);
-                Ok(Condition::Not(inner))
-            }
-            TokenKind::And => {
-                self.advance();
-                let left = Box::new(self.parse_condition()?);
-                let right = Box::new(self.parse_condition()?);
-                Ok(Condition::And(left, right))
-            }
-            TokenKind::Or => {
-                self.advance();
-                let left = Box::new(self.parse_condition()?);
-                let right = Box::new(self.parse_condition()?);
-                Ok(Condition::Or(left, right))
-            }
-            TokenKind::Eq => {
-                self.advance();
-                let left = self.parse_value()?;
-                let right = self.parse_value()?;
-                Ok(Condition::Eq(Box::new(left), Box::new(right)))
-            }
-            TokenKind::Gt => {
-                self.advance();
-                let left = self.parse_value()?;
-                let right = self.parse_value()?;
-                Ok(Condition::Gt(Box::new(left), Box::new(right)))
-            }
-            TokenKind::Lt => {
-                self.advance();
-                let left = self.parse_value()?;
-                let right = self.parse_value()?;
-                Ok(Condition::Lt(Box::new(left), Box::new(right)))
-            }
-            TokenKind::LParen => {
-                // Nested condition: (> x 25) or (and x y)
-                self.advance(); // consume '('
-                let inner = self.parse_condition()?;
-                self.expect(TokenKind::RParen)?;
-                Ok(inner)
-            }
-            _ => {
-                let v = self.parse_value()?;
-                Ok(Condition::from_value(v))
-            }
-        }
-    }
-
-    fn parse_value(&mut self) -> Result<MLValue, ParseError> {
-        let tok = self.current().ok_or(ParseError::UnexpectedEof)?.clone();
-        match tok.kind {
-            TokenKind::Number => {
-                self.advance();
-                let n: f64 = tok.text.parse().map_err(|_| ParseError::InvalidNumber(tok.text))?;
-                Ok(MLValue::Number(n))
-            }
-            TokenKind::String => {
-                self.advance();
-                Ok(MLValue::String(tok.text.trim_matches('"').to_string()))
-            }
-            TokenKind::Atom => {
-                self.advance();
-                let s = tok.text;
-                if s.starts_with("temp.") {
-                    Ok(MLValue::Sensor(s))
-                } else if s.starts_with("gate.") {
-                    Ok(MLValue::Gate(s))
-                } else {
-                    Ok(MLValue::Var(s))
-                }
-            }
-            _ => Err(ParseError::UnexpectedToken(format!("value", ))),
-        }
-    }
-
     fn parse_wait(&mut self) -> Result<MLExpr, ParseError> {
-        let tok = self.expect(TokenKind::Number)?;
-        let ms: u64 = tok.text.parse().map_err(|_| ParseError::InvalidNumber(tok.text.clone()))?;
+        self.advance(); // consume 'wait'
+        let ms = match self.current().cloned().ok_or(ParseError::UnexpectedEof)? {
+            Token { kind: TokenKind::Number, text } => {
+                let n: f64 = text.parse().map_err(|_| ParseError::InvalidNumber(text))?;
+                self.advance();
+                n as u64
+            }
+            t => return Err(ParseError::UnexpectedToken(t.text)),
+        };
         self.expect(TokenKind::RParen)?;
         Ok(MLExpr::Wait { ms })
     }
 
     fn parse_log(&mut self) -> Result<MLExpr, ParseError> {
-        let tok = self.expect(TokenKind::String)?;
-        let msg = tok.text.trim_matches('"').to_string();
+        self.advance(); // consume 'log'
+        // Log can take a string literal OR a variable reference (atom)
+        let inner = self.parse_expr()?;
         self.expect(TokenKind::RParen)?;
-        Ok(MLExpr::Log { message: msg })
+        Ok(MLExpr::Log { message: Box::new(inner) })
     }
 
     fn parse_let(&mut self) -> Result<MLExpr, ParseError> {
-        let name = self.expect(TokenKind::Atom)?.text.clone();
-        let value = self.parse_expr()?;
-        let body = self.parse_expr()?;
+        self.advance(); // consume 'let'
+        let name = match self.current().cloned().ok_or(ParseError::UnexpectedEof)? {
+            Token { kind: TokenKind::Atom, text } => { self.advance(); text }
+            t => return Err(ParseError::UnexpectedToken(t.text)),
+        };
+        let value = Box::new(self.parse_expr()?);
+        let body = Box::new(self.parse_expr()?);
         self.expect(TokenKind::RParen)?;
-        Ok(MLExpr::Let { name, value: Box::new(value), body: Box::new(body) })
+        Ok(MLExpr::Let { name, value, body })
     }
-}
 
-impl Condition {
-    fn from_value(v: MLValue) -> Self {
-        match v {
-            MLValue::Number(n) => Condition::Bool(n != 0.0),
-            MLValue::String(s) => Condition::Bool(!s.is_empty()),
-            MLValue::Var(_) | MLValue::Sensor(_) | MLValue::Gate(_) => Condition::Bool(true),
-            MLValue::Bool(b) => Condition::Bool(b),
-            MLValue::Unit => Condition::Bool(false),
+    fn parse_set(&mut self) -> Result<MLExpr, ParseError> {
+        self.advance(); // consume 'set'
+        let name = match self.current().cloned().ok_or(ParseError::UnexpectedEof)? {
+            Token { kind: TokenKind::Atom, text } => { self.advance(); text }
+            t => return Err(ParseError::UnexpectedToken(t.text)),
+        };
+        let value = Box::new(self.parse_expr()?);
+        self.expect(TokenKind::RParen)?;
+        Ok(MLExpr::Set { name, value })
+    }
+
+    fn parse_if(&mut self) -> Result<MLExpr, ParseError> {
+        self.advance(); // consume 'if'
+        let condition = Box::new(self.parse_expr()?);
+        let then_branch = Box::new(self.parse_expr()?);
+        let else_ = if let Some(TokenKind::RParen) = self.peek() { None }
+            else { Some(Box::new(self.parse_expr()?)) };
+        self.expect(TokenKind::RParen)?;
+        Ok(MLExpr::If { condition, then_branch, else_ })
+    }
+
+    fn parse_while(&mut self) -> Result<MLExpr, ParseError> {
+        self.advance(); // consume 'while'
+        let condition = Box::new(self.parse_expr()?);
+        let body = Box::new(self.parse_expr()?);
+        self.expect(TokenKind::RParen)?;
+        Ok(MLExpr::While { condition, body })
+    }
+
+    fn parse_fn(&mut self) -> Result<MLExpr, ParseError> {
+        self.advance(); // consume 'fn'
+        self.expect(TokenKind::LParen)?;
+        let mut args = Vec::new();
+        loop {
+            match self.current().cloned().ok_or(ParseError::UnexpectedEof)? {
+                Token { kind: TokenKind::RParen, .. } => { self.advance(); break; }
+                Token { kind: TokenKind::Atom, text } => { self.advance(); args.push(text); }
+                t => return Err(ParseError::UnexpectedToken(t.text)),
+            }
         }
+        let body = Box::new(self.parse_expr()?);
+        self.expect(TokenKind::RParen)?;
+        Ok(MLExpr::Fn { args, body })
+    }
+
+    fn parse_begin(&mut self) -> Result<MLExpr, ParseError> {
+        self.advance(); // consume 'begin'
+        let mut exprs = Vec::new();
+        loop {
+            if let Some(TokenKind::RParen) = self.peek() { self.advance(); break; }
+            if self.peek() == None { return Err(ParseError::UnclosedParen); }
+            exprs.push(self.parse_expr()?);
+        }
+        Ok(MLExpr::Begin(exprs))
     }
 }
 
@@ -272,73 +255,29 @@ mod tests {
     use super::*;
 
     fn parse(source: &str) -> MLExpr {
-        let mut p = Parser::new(source);
-        p.parse().unwrap()
+        Parser::new(source).parse().unwrap()
     }
 
-    #[test]
-    fn gate_on() {
-        let expr = parse("(gate garage on)");
+    #[test] fn gate_on() { parse("(gate garage on)"); }
+    #[test] fn read_temp() { parse("(read temp.living_room)"); }
+    #[test] fn wait_ms() { parse("(wait 500)"); }
+    #[test] fn if_temp() { parse("(if (> temp 30) (gate cooling on))"); }
+    #[test] fn let_binding() {
+        let expr = parse("(let x 1 x)");
+        match expr { MLExpr::Let { name, .. } => assert_eq!(name, "x"), _ => panic!("expected Let") }
+    }
+    #[test] fn binary_plus() {
+        let expr = parse("(+ x 3)");
+        match expr { MLExpr::BinaryOp { op, .. } => assert_eq!(op, "+"), _ => panic!("expected BinaryOp") }
+    }
+    #[test] fn nested_let() {
+        let expr = parse("(let x 5 (+ x 3))");
         match expr {
-            MLExpr::Gate { id, state } => {
-                assert_eq!(id, "garage");
-                assert_eq!(state, GateState::On);
-            }
-            _ => panic!("expected Gate, got {:?}", expr),
-        }
-    }
-
-    #[test]
-    fn gate_off() {
-        let expr = parse("(gate door off)");
-        match expr {
-            MLExpr::Gate { id, state } => {
-                assert_eq!(id, "door");
-                assert_eq!(state, GateState::Off);
-            }
-            _ => panic!("expected Gate"),
-        }
-    }
-
-    #[test]
-    fn read_temp() {
-        let expr = parse("(read temp.living_room)");
-        match expr {
-            MLExpr::Read { sensor } => assert_eq!(sensor, "temp.living_room"),
-            _ => panic!("expected Read"),
-        }
-    }
-
-    #[test]
-    fn wait_ms() {
-        let expr = parse("(wait 500)");
-        match expr {
-            MLExpr::Wait { ms } => assert_eq!(ms, 500),
-            _ => panic!("expected Wait"),
-        }
-    }
-
-    #[test]
-    fn sequence() {
-        let expr = parse("(gate garage on) (read temp.living_room)");
-        match expr {
-            MLExpr::Sequence(v) => assert_eq!(v.len(), 2),
-            _ => panic!("expected Sequence"),
-        }
-    }
-
-    #[test]
-    fn if_temp() {
-        let source = "(if (> temp.living_room 25) (gate fan on))";
-        let mut p = Parser::new(source);
-        // First expr should be If
-        let result = p.parse();
-        match result {
-            Ok(MLExpr::If { condition, .. }) => {
-                eprintln!("OK: condition = {:?}", condition);
-            }
-            Ok(other) => panic!("expected If, got {:?}", other),
-            Err(e) => panic!("parse error: {} (token[2] = {:?})", e, crate::tokenize(source).get(2)),
+            MLExpr::Let { body, .. } => match *body {
+                MLExpr::BinaryOp { op, .. } => assert_eq!(op, "+"),
+                _ => panic!("expected BinaryOp"),
+            },
+            _ => panic!("expected Let"),
         }
     }
 }

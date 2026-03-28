@@ -1,0 +1,9 @@
+[package]
+name = "ml-hw-http"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ml-hal = { path = "../ml-hal" }
+reqwest = { workspace = true, features = ["blocking"] }
+serde_json = { workspace = true }

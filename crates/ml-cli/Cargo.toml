@@ -1,0 +1,22 @@
+[package]
+name = "ml-cli"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "ml"
+path = "src/main.rs"
+
+[dependencies]
+ml-core = { path = "../ml-core" }
+ml-hal = { path = "../ml-hal" }
+ml-memphis = { path = "../ml-memphis" }
+ml-hw-gpio = { path = "../ml-hw-gpio" }
+ml-hw-http = { path = "../ml-hw-http" }
+ml-p2p = { path = "../ml-p2p" }
+clap = { version = "4", features = ["derive"] }
+anyhow = "1"
+serde_json = "1"
+tokio = { version = "1", features = ["rt", "fs"] }
+tracing = "0.1"
+tracing-subscriber = "0.3"

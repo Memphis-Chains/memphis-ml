@@ -1,12 +1,24 @@
-// ML-Core Lexer — prosty bez Logos (unikamy konfliktów regex/token)
+// ML-Core Lexer — manual tokenizer
 
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum TokenKind {
+    // Ignored
+    Ignored,
+    // Structurals
     LParen, RParen, LBracket, RBracket,
+    // Keywords
     Gate, Read, If, Else, Wait, Log, Let,
     On, Off, Toggle, True, False,
-    And, Or, Not, Eq, Gt, Lt,
+    And, Or, Not,
+    // Comparison
+    Eq, Neq, Gt, Lt, Gte, Lte,
+    // Arithmetic
+    Plus, Minus, Star, Slash, Percent,
+    // New keywords
+    Fn, While, Set, Begin,
+    // Literals
     String, Number, Atom,
+    // End
     Eof,
 }
 
@@ -22,10 +34,17 @@ pub fn tokenize(source: &str) -> Vec<Token> {
 
     while let Some(&c) = chars.peek() {
         match c {
-            '(' => { chars.next(); tokens.push(Token { kind: TokenKind::LParen, text: "(".into() }); }
-            ')' => { chars.next(); tokens.push(Token { kind: TokenKind::RParen, text: ")".into() }); }
-            '[' => { chars.next(); tokens.push(Token { kind: TokenKind::LBracket, text: "[".into() }); }
-            ']' => { chars.next(); tokens.push(Token { kind: TokenKind::RBracket, text: "]".into() }); }
+            // Whitespace
+            ' ' | '\t' | '\r' | '\n' => { chars.next(); }
+            // Number BEFORE letters — '3' would match 'a'..'z' arm otherwise
+            '0'..='9' => {
+                let mut num = String::new();
+                while let Some(&c) = chars.peek() {
+                    if c.is_numeric() || c == '.' || c == 'e' || c == 'E' { num.push(c); chars.next(); }
+                    else { break; }
+                }
+                tokens.push(Token { kind: TokenKind::Number, text: num });
+            }
             '"' => {
                 chars.next();
                 let mut s = String::new();
@@ -36,30 +55,41 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                 }
                 tokens.push(Token { kind: TokenKind::String, text: format!("\"{}\"", s) });
             }
-            '-' | '0'..='9' => {
-                let mut num = String::new();
-                while let Some(&c) = chars.peek() {
-                    if c.is_numeric() || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-' {
-                        num.push(c); chars.next();
-                    } else { break; }
-                }
-                tokens.push(Token { kind: TokenKind::Number, text: num });
-            }
+            // Comments
             ';' => {
                 while let Some(&c) = chars.peek() { if c == '\n' { break; } chars.next(); }
             }
-            ' ' | '\t' | '\r' | '\n' => { chars.next(); }
-            '>' => { chars.next(); tokens.push(Token { kind: TokenKind::Gt, text: ">".into() }); }
-            '<' => { chars.next(); tokens.push(Token { kind: TokenKind::Lt, text: "<".into() }); }
+            // Operators
+            '+' => { chars.next(); tokens.push(Token { kind: TokenKind::Plus, text: "+".into() }); }
+            '-' => { chars.next(); tokens.push(Token { kind: TokenKind::Minus, text: "-".into() }); }
+            '*' => { chars.next(); tokens.push(Token { kind: TokenKind::Star, text: "*".into() }); }
+            '/' => { chars.next(); tokens.push(Token { kind: TokenKind::Slash, text: "/".into() }); }
+            '%' => { chars.next(); tokens.push(Token { kind: TokenKind::Percent, text: "%".into() }); }
             '=' => {
                 chars.next();
                 if chars.peek() == Some(&'=') { chars.next(); tokens.push(Token { kind: TokenKind::Eq, text: "==".into() }); }
                 else { tokens.push(Token { kind: TokenKind::Atom, text: "=".into() }); }
             }
+            '!' => {
+                chars.next();
+                if chars.peek() == Some(&'=') { chars.next(); tokens.push(Token { kind: TokenKind::Neq, text: "!=".into() }); }
+                else { tokens.push(Token { kind: TokenKind::Atom, text: "!".into() }); }
+            }
+            '>' => {
+                chars.next();
+                if chars.peek() == Some(&'=') { chars.next(); tokens.push(Token { kind: TokenKind::Gte, text: ">=".into() }); }
+                else { tokens.push(Token { kind: TokenKind::Gt, text: ">".into() }); }
+            }
+            '<' => {
+                chars.next();
+                if chars.peek() == Some(&'=') { chars.next(); tokens.push(Token { kind: TokenKind::Lte, text: "<=".into() }); }
+                else { tokens.push(Token { kind: TokenKind::Lt, text: "<".into() }); }
+            }
+            // Keywords (AFTER numbers — so '3' is parsed as number, not Atom)
             'a'..='z' | 'A'..='Z' | '_' => {
                 let mut s = String::new();
                 while let Some(&c) = chars.peek() {
-                    if c.is_alphanumeric() || c == '_' || c == '.' || c == ':' || c == '-' { s.push(c); chars.next(); }
+                    if c.is_alphabetic() || c == '_' || c.is_numeric() || c == '.' || c == ':' || c == '-' { s.push(c); chars.next(); }
                     else { break; }
                 }
                 let kind = match s.as_str() {
@@ -67,9 +97,13 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                     "read" => TokenKind::Read,
                     "if" => TokenKind::If,
                     "else" => TokenKind::Else,
+                    "while" => TokenKind::While,
                     "wait" => TokenKind::Wait,
                     "log" => TokenKind::Log,
                     "let" => TokenKind::Let,
+                    "fn" => TokenKind::Fn,
+                    "set" => TokenKind::Set,
+                    "begin" => TokenKind::Begin,
                     "on" => TokenKind::On,
                     "off" => TokenKind::Off,
                     "toggle" => TokenKind::Toggle,
@@ -82,6 +116,10 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                 };
                 tokens.push(Token { kind, text: s });
             }
+            '(' => { chars.next(); tokens.push(Token { kind: TokenKind::LParen, text: "(".into() }); }
+            ')' => { chars.next(); tokens.push(Token { kind: TokenKind::RParen, text: ")".into() }); }
+            '[' => { chars.next(); tokens.push(Token { kind: TokenKind::LBracket, text: "[".into() }); }
+            ']' => { chars.next(); tokens.push(Token { kind: TokenKind::RBracket, text: "]".into() }); }
             _ => { chars.next(); }
         }
     }
@@ -93,14 +131,16 @@ pub fn tokenize(source: &str) -> Vec<Token> {
 mod tests {
     use super::*;
 
-    fn tok(src: &str) -> Vec<Token> { tokenize(src) }
+    fn tok(source: &str) -> Vec<Token> { tokenize(source) }
 
     #[test]
     fn gate() {
         let t = tok("(gate garage on)");
         assert_eq!(t[0].kind, TokenKind::LParen);
         assert_eq!(t[1].kind, TokenKind::Gate);
+        assert_eq!(t[1].text, "gate");
         assert_eq!(t[2].kind, TokenKind::Atom);
+        assert_eq!(t[2].text, "garage");
         assert_eq!(t[3].kind, TokenKind::On);
     }
 
@@ -123,5 +163,25 @@ mod tests {
         let t = tok(r#"(log "hello")"#);
         assert_eq!(t[2].kind, TokenKind::String);
         assert_eq!(t[2].text, "\"hello\"");
+    }
+
+    #[test]
+    fn comparison_ops() {
+        let t = tok("(< x 10)");
+        assert_eq!(t[1].kind, TokenKind::Lt);
+    }
+
+    #[test]
+    fn arithmetic_ops() {
+        let t = tok("(+ x 1)");
+        assert_eq!(t[1].kind, TokenKind::Plus);
+        let t2 = tok("(- x 2)");
+        assert_eq!(t2[1].kind, TokenKind::Minus);
+        let t3 = tok("(* x 3)");
+        assert_eq!(t3[1].kind, TokenKind::Star);
+        let t4 = tok("(/ x 4)");
+        assert_eq!(t4[1].kind, TokenKind::Slash);
+        let t5 = tok("(% x 5)");
+        assert_eq!(t5[1].kind, TokenKind::Percent);
     }
 }

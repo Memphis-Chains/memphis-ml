@@ -6,10 +6,11 @@ pub mod lexer;
 pub mod machine;
 pub mod parser;
 
-pub use ast::{GateState, MLExpr, MLValue};
+pub use ast::{MLExpr, MLValue};
 pub use error::{ParseError, RuntimeError};
 pub use lexer::{tokenize, Token, TokenKind};
-pub use machine::{Machine, MockMachine, Runtime};
+pub use machine::{Machine, MockMachine, MlHalMachine, Runtime};
+pub use machine::Runtime as MlRuntime;
 
 /// Szybki parsing + execution
 pub fn run(source: &str) -> Result<MLValue, Box<dyn std::error::Error>> {

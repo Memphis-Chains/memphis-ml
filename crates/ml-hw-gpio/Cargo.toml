@@ -1,0 +1,10 @@
+[package]
+name = "ml-hw-gpio"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ml-hal = { path = "../ml-hal" }
+thiserror = "2"
+tokio = { version = "1", features = ["rt-multi-thread", "fs"] }
+serde = { version = "1", features = ["derive"] }

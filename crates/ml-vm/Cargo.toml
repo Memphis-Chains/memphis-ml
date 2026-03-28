@@ -1,0 +1,9 @@
+[package]
+name = "ml-vm"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+ml-core = { path = "../ml-core" }
+thiserror = "2"
+serde = { version = "1", features = ["derive"] }
