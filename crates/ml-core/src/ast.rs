@@ -21,6 +21,7 @@ pub enum MLExpr {
     While { condition: Box<MLExpr>, body: Box<MLExpr> },
     Begin(Vec<MLExpr>),
     BinaryOp { op: String, left: Box<MLExpr>, right: Box<MLExpr> },
+    UnaryOp { op: String, operand: Box<MLExpr> },
 }
 
 impl MLExpr {

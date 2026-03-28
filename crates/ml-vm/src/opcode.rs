@@ -123,6 +123,7 @@ impl TryFrom<u8> for OpCode {
             0x21 => Ok(OpCode::SensorRead),
             0x22 => Ok(OpCode::Log),
             0x30 => Ok(OpCode::MakeClosure(0)),
+            0xFF => Ok(OpCode::Halt),
             _ => Err("unknown opcode"),
         }
     }

@@ -193,7 +193,10 @@ impl Compiler {
                         // This is simplified; full bool comparison would need VM support
                         self.compile_comparison(op.as_str())?;
                     }
-                    _ => return Err(CompileError::UnsupportedOperator(op.clone())),
+                    _ => {
+                        eprintln!("DEBUG: unknown op: {:?}", op.as_str());
+                        return Err(CompileError::UnsupportedOperator(op.clone()));
+                    }
                 }
             }
 

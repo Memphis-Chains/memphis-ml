@@ -73,7 +73,7 @@ pub fn tokenize(source: &str) -> Vec<Token> {
             '!' => {
                 chars.next();
                 if chars.peek() == Some(&'=') { chars.next(); tokens.push(Token { kind: TokenKind::Neq, text: "!=".into() }); }
-                else { tokens.push(Token { kind: TokenKind::Atom, text: "!".into() }); }
+                else { tokens.push(Token { kind: TokenKind::Not, text: "!".into() }); }
             }
             '>' => {
                 chars.next();
@@ -84,6 +84,16 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                 chars.next();
                 if chars.peek() == Some(&'=') { chars.next(); tokens.push(Token { kind: TokenKind::Lte, text: "<=".into() }); }
                 else { tokens.push(Token { kind: TokenKind::Lt, text: "<".into() }); }
+            }
+            '&' => {
+                chars.next();
+                if chars.peek() == Some(&'&') { chars.next(); tokens.push(Token { kind: TokenKind::And, text: "&&".into() }); }
+                else { chars.next(); } // skip lone &
+            }
+            '|' => {
+                chars.next();
+                if chars.peek() == Some(&'|') { chars.next(); tokens.push(Token { kind: TokenKind::Or, text: "||".into() }); }
+                else { chars.next(); } // skip lone |
             }
             // Keywords (AFTER numbers — so '3' is parsed as number, not Atom)
             'a'..='z' | 'A'..='Z' | '_' => {

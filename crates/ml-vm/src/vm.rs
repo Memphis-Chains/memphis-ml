@@ -1,384 +1,46 @@
-//! Execution engine for the ML bytecode VM.
+//! Simple Bytecode VM for Memphis Language (ML)
+//! Clean implementation with correct PC management.
+//!
+//! PC Management rules:
+//! - fetch() reads opcode at pc, advances pc past it
+//! - Multi-byte opcodes (Const, Load, Store, Jmp) read operands in execute(), advance pc past them
+//! - Single-byte opcodes do NOT advance pc in execute (fetch already did)
 
-use crate::error::VmError;
-use crate::opcode::{self, OpCode};
-use ml_core::{Machine, MockMachine};
-use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use crate::{VMError, OpCode, Value};
 
-// ---------------------------------------------------------------------------
-// Value
-// ---------------------------------------------------------------------------
-
-/// Runtime values on the VM stack and in locals.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub enum Value {
-    Unit,
-    Bool(bool),
-    Number(f64),
-    String(String),
-    List(Vec<Value>),
-    Function(Function),
-}
-
-impl Value {
-    fn as_number(&self) -> Option<f64> {
-        match self {
-            Value::Number(n) => Some(*n),
-            _ => None,
-        }
-    }
-
-    fn as_bool(&self) -> bool {
-        match self {
-            Value::Bool(b) => *b,
-            Value::Number(n) => *n != 0.0,
-            Value::String(s) => !s.is_empty(),
-            Value::Unit => false,
-            Value::List(_) => true,
-            Value::Function(_) => true,
-        }
-    }
-
-    fn type_name(&self) -> &'static str {
-        match self {
-            Value::Unit => "Unit",
-            Value::Bool(_) => "Bool",
-            Value::Number(_) => "Number",
-            Value::String(_) => "String",
-            Value::List(_) => "List",
-            Value::Function(_) => "Function",
-        }
-    }
-}
-
-impl std::fmt::Display for Value {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Value::Unit => write!(f, "()"),
-            Value::Bool(b) => write!(f, "{}", b),
-            Value::Number(n) => write!(f, "{}", n),
-            Value::String(s) => write!(f, "{}", s),
-            Value::List(vs) => write!(f, "[{:?}]", vs),
-            Value::Function(_) => write!(f, "<fn>"),
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Function
-// ---------------------------------------------------------------------------
-
-/// A compiled function stored in the constant pool.
-#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
-pub struct Function {
-    pub arity: u8,
-    pub locals: usize,
-    pub code: Vec<u8>,
-    pub constants: Vec<Value>,
-}
-
-// ---------------------------------------------------------------------------
-// Frame (call frame for functions)
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-pub struct Frame {
-    /// Local variables for this frame
-    locals: Vec<Value>,
-    /// Program counter to return to
-    return_pc: usize,
-}
-
-impl Frame {
-    fn new(locals: usize, return_pc: usize) -> Self {
-        Self {
-            locals: vec![Value::Unit; locals],
-            return_pc,
-        }
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Compiled Module
-// ---------------------------------------------------------------------------
-
-/// A bytecode module ready for execution.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct CompiledModule {
-    /// Raw bytecode instructions
-    pub code: Vec<u8>,
-    /// Constant pool (CONST i loads constants[i])
-    pub constants: Vec<Value>,
-    /// Named functions defined in this module
-    pub functions: HashMap<String, Function>,
-}
-
-impl CompiledModule {
-    pub fn new() -> Self {
-        Self {
-            code: Vec::new(),
-            constants: Vec::new(),
-            functions: HashMap::new(),
-        }
-    }
-}
-
-impl Default for CompiledModule {
-    fn default() -> Self {
-        Self::new()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Virtual Machine
-// ---------------------------------------------------------------------------
-
-/// Stack-based bytecode VM for ML programs.
 pub struct VM {
-    /// Instruction memory (current function's bytecode)
     code: Vec<u8>,
-    /// Constant pool (current function's constants)
     constants: Vec<Value>,
-    /// Current function's local slots
-    locals: Vec<Value>,
-    /// Operand stack
     stack: Vec<Value>,
-    /// Call frames stack
-    frames: Vec<Frame>,
-    /// Program counter (index into `code`)
+    locals: Vec<Value>,
     pc: usize,
-    /// Hardware machine (for gate/sensor ops)
-    machine: Box<dyn Machine>,
-    /// Max iterations before aborting
-    max_iterations: u64,
-    /// Iteration counter
-    iteration_count: u64,
-    /// Global functions
-    functions: HashMap<String, Function>,
-}
-
-impl std::fmt::Debug for VM {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VM")
-            .field("pc", &self.pc)
-            .field("stack_len", &self.stack.len())
-            .field("frames_len", &self.frames.len())
-            .field("iteration_count", &self.iteration_count)
-            .finish()
-    }
 }
 
 impl VM {
-    /// Create a new VM from a compiled module, using a MockMachine.
-    pub fn new(module: CompiledModule) -> Self {
-        Self::with_machine(module, Box::new(MockMachine::new()))
-    }
-
-    /// Create a new VM with a custom machine backend.
-    pub fn with_machine(module: CompiledModule, machine: Box<dyn Machine>) -> Self {
+    pub fn new(code: Vec<u8>, constants: Vec<Value>) -> Self {
         Self {
-            code: module.code,
-            constants: module.constants,
-            locals: Vec::new(),
+            code,
+            constants,
             stack: Vec::new(),
-            frames: Vec::new(),
+            locals: vec![Value::Unit; 32], // pre-allocated locals
             pc: 0,
-            machine,
-            max_iterations: 1_000_000,
-            iteration_count: 0,
-            functions: module.functions,
         }
     }
 
-    /// Set the max iteration limit (default 1_000_000).
-    pub fn with_max_iterations(mut self, max: u64) -> Self {
-        self.max_iterations = max;
-        self
-    }
-
-    /// Execute the bytecode to completion, returning the final stack value.
-    pub fn run(&mut self) -> Result<Value, VmError> {
-        loop {
-            if self.iteration_count >= self.max_iterations {
-                return Err(VmError::IterationLimitExceeded { limit: self.max_iterations });
-            }
-            self.iteration_count += 1;
-
-            let op = match self.fetch() {
-                Ok(op) => op,
-                Err(VmError::Halt) => break,
-                Err(e) => return Err(e),
-            };
-
-            if let OpCode::Halt = op {
-                break;
-            }
-
-            self.execute(op)?;
-        }
-
-        Ok(self.stack_pop().unwrap_or(Value::Unit))
-    }
-
-    // ── Fetch / Execute ────────────────────────────────────────────────────
-
-    fn fetch(&mut self) -> Result<OpCode, VmError> {
+    /// Read next byte and advance PC by 1
+    fn read_byte(&mut self) -> Result<u8, VMError> {
         if self.pc >= self.code.len() {
-            return Err(VmError::Halt);
+            return Err(VMError::InvalidBytecode("unexpected end of code".into()));
         }
-        let byte = self.code[self.pc];
+        let b = self.code[self.pc];
         self.pc += 1;
-        OpCode::try_from(byte).map_err(|_| VmError::InvalidBytecode(format!("unknown opcode byte: {byte:#04x}")))
+        Ok(b)
     }
 
-    fn execute(&mut self, op: OpCode) -> Result<(), VmError> {
-        match op {
-            OpCode::Push => {
-                let idx = self.read_u16()?;
-                let c = self.constants.get(idx as usize)
-                    .ok_or(VmError::ConstantBounds { index: idx as usize, max: self.constants.len() })?
-                    .clone();
-                self.stack_push(c);
-            }
-            OpCode::Pop => {
-                self.stack_pop()
-                    .ok_or_else(|| VmError::StackUnderflow { opcode: "Pop" })?;
-            }
-            OpCode::Dup => {
-                let top = self.stack_peek()?.clone();
-                self.stack_push(top);
-            }
-            OpCode::Const(idx) => {
-                let c = self.constants.get(idx as usize)
-                    .ok_or(VmError::ConstantBounds { index: idx as usize, max: self.constants.len() })?
-                    .clone();
-                self.stack_push(c);
-            }
-            OpCode::Load(idx) => {
-                let v = self.locals.get(idx as usize)
-                    .ok_or(VmError::LocalBounds { index: idx as usize, max: self.locals.len() })?
-                    .clone();
-                self.stack_push(v);
-            }
-            OpCode::Store(idx) => {
-                let v = self.stack_pop()
-                    .ok_or(VmError::StackUnderflow { opcode: "Store" })?;
-                if idx as usize >= self.locals.len() {
-                    self.locals.resize(idx as usize + 1, Value::Unit);
-                }
-                self.locals[idx as usize] = v;
-            }
-            OpCode::Goto(offset) => {
-                // offset is a raw byte displacement; add it to current pc
-                self.pc = self.pc.wrapping_add(offset as usize);
-            }
-            OpCode::IfGoto(offset) => {
-                let cond = self.pop_bool()?;
-                if cond {
-                    self.pc = self.pc.wrapping_add(offset as usize);
-                }
-            }
-            OpCode::Call(arg_count, _local_count) => {
-                let func = self.stack_pop()
-                    .ok_or(VmError::StackUnderflow { opcode: "Call" })?;
-                match func {
-                    Value::Function(f) => {
-                        // Save current frame (with current locals)
-                        let old_locals = std::mem::take(&mut self.locals);
-                        let frame = Frame::new(old_locals.len(), self.pc);
-                        self.frames.push(frame);
-
-                        // Pop arguments into new locals
-                        self.locals = vec![Value::Unit; f.locals];
-                        for i in (0..arg_count).rev() {
-                            let arg = self.stack_pop()
-                                .ok_or(VmError::StackUnderflow { opcode: "Call" })?;
-                            self.locals[i as usize] = arg;
-                        }
-
-                        // Push function's constants as our constants
-                        self.code = f.code;
-                        self.constants = f.constants;
-                        self.pc = 0;
-                    }
-                    Value::Unit | Value::Number(_) | Value::Bool(_) | Value::String(_) | Value::List(_) => {
-                        return Err(VmError::TypeError { expected: "Function", got: func.type_name().into() });
-                    }
-                }
-            }
-            OpCode::Return => {
-                let result = self.stack_pop().unwrap_or(Value::Unit);
-                if let Some(frame) = self.frames.pop() {
-                    self.locals = frame.locals;
-                    self.pc = frame.return_pc;
-                }
-                self.stack_push(result);
-                return Ok(());
-            }
-            OpCode::Halt => {
-                return Err(VmError::Halt);
-            }
-            OpCode::Add => {
-                let b = self.pop_number()?;
-                let a = self.pop_number()?;
-                self.stack_push(Value::Number(a + b));
-            }
-            OpCode::Sub => {
-                let b = self.pop_number()?;
-                let a = self.pop_number()?;
-                self.stack_push(Value::Number(a - b));
-            }
-            OpCode::Mul => {
-                let b = self.pop_number()?;
-                let a = self.pop_number()?;
-                self.stack_push(Value::Number(a * b));
-            }
-            OpCode::Div => {
-                let b = self.pop_number()?;
-                let a = self.pop_number()?;
-                if b == 0.0 {
-                    return Err(VmError::DivisionByZero);
-                }
-                self.stack_push(Value::Number(a / b));
-            }
-            OpCode::Gate => {
-                // Stack: [..., gate_id (String), state (String)]
-                let state = self.pop_string()?;
-                let id = self.pop_string()?;
-                self.machine.set_gate(&id, &state)
-                    .map_err(|e| VmError::MachineError(e.to_string()))?;
-                self.stack_push(Value::Unit);
-            }
-            OpCode::SensorRead => {
-                // Stack: [..., sensor_id (String)]
-                let id = self.pop_string()?;
-                let val = self.machine.read_sensor(&id)
-                    .map_err(|e| VmError::MachineError(e.to_string()))?;
-                self.stack_push(Value::Number(val));
-            }
-            OpCode::Log => {
-                // Stack: [..., message (Value)]
-                let msg = self.stack_pop().unwrap_or(Value::Unit);
-                println!("[ML] {}", msg);
-                self.stack_push(Value::Unit);
-            }
-            OpCode::MakeClosure(upval_count) => {
-                // For now, just push a placeholder unit
-                let _: Vec<Value> = (0..upval_count)
-                    .map(|_| self.stack_pop().unwrap_or(Value::Unit))
-                    .collect();
-                self.stack_push(Value::Unit);
-            }
-        }
-        Ok(())
-    }
-
-    // ── Operand decoding ──────────────────────────────────────────────────
-
-    fn read_u16(&mut self) -> Result<u16, VmError> {
+    /// Read next 2 bytes as big-endian u16 and advance PC by 2
+    fn read_u16(&mut self) -> Result<u16, VMError> {
         if self.pc + 1 >= self.code.len() {
-            return Err(VmError::InvalidBytecode("unexpected end of bytecode".into()));
+            return Err(VMError::InvalidBytecode("unexpected end of code".into()));
         }
         let hi = self.code[self.pc] as u16;
         let lo = self.code[self.pc + 1] as u16;
@@ -386,55 +48,216 @@ impl VM {
         Ok((hi << 8) | lo)
     }
 
-    // ── Stack helpers ────────────────────────────────────────────────────
-
-    fn stack_push(&mut self, v: Value) {
-        self.stack.push(v);
+    fn push(&mut self, v: Value) { self.stack.push(v); }
+    fn pop(&mut self) -> Result<Value, VMError> {
+        self.stack.pop().ok_or(VMError::StackUnderflow { opcode: OpCode::Halt })
     }
-
-    fn stack_pop(&mut self) -> Option<Value> {
-        self.stack.pop()
-    }
-
-    fn stack_peek(&self) -> Result<Value, VmError> {
-        self.stack.last().cloned()
-            .ok_or_else(|| VmError::StackUnderflow { opcode: "Peek" })
-    }
-
-    fn pop_number(&mut self) -> Result<f64, VmError> {
-        self.stack_pop()
-            .and_then(|v| v.as_number())
-            .ok_or_else(|| VmError::TypeError {
-                expected: "Number",
-                got: self.stack.last().map(|v| v.type_name().into()).unwrap_or_default(),
-            })
-    }
-
-    fn pop_bool(&mut self) -> Result<bool, VmError> {
-        Ok(self.stack_pop().map(|v| v.as_bool()).unwrap_or(false))
-    }
-
-    fn pop_string(&mut self) -> Result<String, VmError> {
-        match self.stack_pop() {
-            Some(Value::String(s)) => Ok(s),
-            Some(v) => Err(VmError::TypeError { expected: "String", got: v.type_name().into() }),
-            None => Err(VmError::StackUnderflow { opcode: "PopString" }),
+    fn pop_number(&mut self) -> Result<f64, VMError> {
+        match self.stack.pop() {
+            Some(Value::Number(n)) => Ok(n),
+            Some(v) => Err(VMError::TypeError { expected: "Number", got: v }),
+            None => Err(VMError::TypeError { expected: "Number", got: Value::Unit }),
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Disassembler
-// ---------------------------------------------------------------------------
-
-/// Human-readable disassembly of bytecode.
-pub fn disassemble(code: &[u8], constants: &[Value]) -> String {
-    let mut out = String::new();
-    let mut pc = 0;
-    while pc < code.len() {
-        let (line, next) = opcode::disassemble_op(code, pc);
-        out.push_str(&format!("{:04x}: {}\n", pc, line));
-        pc = next;
+    fn pop_bool(&mut self) -> Result<bool, VMError> {
+        match self.stack.pop() {
+            Some(Value::Bool(b)) => Ok(b),
+            Some(Value::Number(n)) => Ok(n != 0.0),
+            Some(v) => Err(VMError::TypeError { expected: "Bool", got: v }),
+            None => Err(VMError::TypeError { expected: "Bool", got: Value::Unit }),
+        }
     }
-    out
+
+    pub fn run(&mut self) -> Result<Value, VMError> {
+        loop {
+            if self.pc >= self.code.len() {
+                return Ok(self.stack.pop().unwrap_or(Value::Unit));
+            }
+            let op = self.fetch()?;
+            self.execute(op)?;
+        }
+    }
+
+    fn fetch(&mut self) -> Result<OpCode, VMError> {
+        let byte = self.read_byte()?;
+        OpCode::try_from(byte)
+    }
+
+    fn execute(&mut self, op: OpCode) -> Result<(), VMError> {
+        match op {
+            OpCode::Halt => return Ok(()),
+
+            OpCode::Const(idx_hint) => {
+                // idx_hint is ignored; read actual index
+                let idx = self.read_u16()? as usize;
+                let c = self.constants.get(idx)
+                    .ok_or(VMError::ConstantBounds { index: idx, max: self.constants.len() })?
+                    .clone();
+                self.stack.push(c);
+            }
+
+            OpCode::Push => {
+                // Push reads next u16 as constant index
+                let idx = self.read_u16()? as usize;
+                let c = self.constants.get(idx)
+                    .ok_or(VMError::ConstantBounds { index: idx, max: self.constants.len() })?
+                    .clone();
+                self.stack.push(c);
+            }
+
+            OpCode::Load(idx_hint) => {
+                let idx = self.read_byte()? as usize;
+                let v = self.locals.get(idx)
+                    .ok_or(VMError::LocalBounds { index: idx, max: self.locals.len() })?
+                    .clone();
+                self.stack.push(v);
+            }
+
+            OpCode::Store(idx_hint) => {
+                let idx = self.read_byte()? as usize;
+                let v = self.pop()?;
+                // Auto-expand locals if needed
+                while self.locals.len() <= idx {
+                    self.locals.push(Value::Unit);
+                }
+                self.locals[idx] = v;
+            }
+
+            OpCode::Pop => {
+                self.stack.pop();
+            }
+
+            OpCode::Dup => {
+                if let Some(top) = self.stack.last() {
+                    self.stack.push(top.clone());
+                }
+            }
+
+            OpCode::Jmp(offset_hint) => {
+                let offset = self.read_u16()? as i32;
+                self.pc = ((self.pc as i32) + offset - 3) as usize;
+            }
+
+            OpCode::JmpIf(offset_hint) => {
+                let offset = self.read_u16()? as i32;
+                let cond = self.pop_bool()?;
+                if cond {
+                    self.pc = ((self.pc as i32) + offset - 3) as usize;
+                }
+            }
+
+            OpCode::JmpIfNot(offset_hint) => {
+                let offset = self.read_u16()? as i32;
+                let cond = self.pop_bool()?;
+                if !cond {
+                    self.pc = ((self.pc as i32) + offset - 3) as usize;
+                }
+            }
+
+            OpCode::Return => {
+                let v = self.stack.pop().unwrap_or(Value::Unit);
+                self.stack.clear();
+                self.stack.push(v);
+            }
+
+            OpCode::Add => {
+                let b = self.pop_number()?;
+                let a = self.pop_number()?;
+                self.stack.push(Value::Number(a + b));
+            }
+            OpCode::Sub => {
+                let b = self.pop_number()?;
+                let a = self.pop_number()?;
+                self.stack.push(Value::Number(a - b));
+            }
+            OpCode::Mul => {
+                let b = self.pop_number()?;
+                let a = self.pop_number()?;
+                self.stack.push(Value::Number(a * b));
+            }
+            OpCode::Div => {
+                let b = self.pop_number()?;
+                let a = self.pop_number()?;
+                self.stack.push(Value::Number(a / b));
+            }
+            OpCode::Mod => {
+                let b = self.pop_number()?;
+                let a = self.pop_number()?;
+                self.stack.push(Value::Number(a % b));
+            }
+            OpCode::Eq => {
+                let b = self.pop_number()?;
+                let a = self.pop_number()?;
+                self.stack.push(Value::Bool(a == b));
+            }
+            OpCode::Ne => {
+                let b = self.pop_number()?;
+                let a = self.pop_number()?;
+                self.stack.push(Value::Bool(a != b));
+            }
+            OpCode::Lt => {
+                let b = self.pop_number()?;
+                let a = self.pop_number()?;
+                self.stack.push(Value::Bool(a < b));
+            }
+            OpCode::Gt => {
+                let b = self.pop_number()?;
+                let a = self.pop_number()?;
+                self.stack.push(Value::Bool(a > b));
+            }
+            OpCode::Le => {
+                let b = self.pop_number()?;
+                let a = self.pop_number()?;
+                self.stack.push(Value::Bool(a <= b));
+            }
+            OpCode::Ge => {
+                let b = self.pop_number()?;
+                let a = self.pop_number()?;
+                self.stack.push(Value::Bool(a >= b));
+            }
+            OpCode::And => {
+                let b = self.pop_bool()?;
+                let a = self.pop_bool()?;
+                self.stack.push(Value::Bool(a && b));
+            }
+            OpCode::Or => {
+                let b = self.pop_bool()?;
+                let a = self.pop_bool()?;
+                self.stack.push(Value::Bool(a || b));
+            }
+            OpCode::Not => {
+                let a = self.pop_bool()?;
+                self.stack.push(Value::Bool(!a));
+            }
+
+            OpCode::GateOn => {
+                // GateOn: pops id, sets gate on
+                // For now: no-op or error
+            }
+            OpCode::GateOff => {}
+            OpCode::GateToggle => {}
+            OpCode::ReadTemp => {
+                self.stack.push(Value::Number(22.0)); // mock
+            }
+            OpCode::ReadHumidity => {
+                self.stack.push(Value::Number(50.0)); // mock
+            }
+            OpCode::ReadBool => {
+                self.stack.push(Value::Bool(false)); // mock
+            }
+            OpCode::Actuate => {
+                self.stack.pop(); self.stack.pop(); // pop value and id
+            }
+            OpCode::MakeClosure(_) => {
+                self.stack.push(Value::Unit);
+            }
+            OpCode::Call(_, _) => {
+                return Err(VMError::InvalidBytecode("Call not implemented in simple VM".into()));
+            }
+            OpCode::LoadArg(_) => {
+                self.stack.push(Value::Unit);
+            }
+        }
+        Ok(())
+    }
 }

@@ -2,7 +2,10 @@
 //! 
 //! Executes ML bytecode compiled from AST.
 
-use ml_core::{Machine, MLExpr, MockMachine};
+use ml_core::MLExpr;
+
+mod vm;
+use crate::vm::VM;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use thiserror::Error;
@@ -139,29 +142,29 @@ impl OpCode {
                 vec![0x09, (offset >> 8) as u8, offset as u8]
             }
             OpCode::Call(arg_count, local_count) => vec![0x0A, arg_count, local_count],
-            OpCode::Return => vec![0x0B],
-            OpCode::Add => vec![0x0C],
-            OpCode::Sub => vec![0x0D],
-            OpCode::Mul => vec![0x0E],
-            OpCode::Div => vec![0x0F],
-            OpCode::Mod => vec![0x10],
-            OpCode::Eq => vec![0x11],
-            OpCode::Ne => vec![0x12],
-            OpCode::Lt => vec![0x13],
-            OpCode::Gt => vec![0x14],
-            OpCode::Le => vec![0x15],
-            OpCode::Ge => vec![0x16],
-            OpCode::And => vec![0x17],
-            OpCode::Or => vec![0x18],
-            OpCode::Not => vec![0x19],
-            OpCode::GateOn => vec![0x1A],
-            OpCode::GateOff => vec![0x1B],
-            OpCode::GateToggle => vec![0x1C],
-            OpCode::ReadTemp => vec![0x1D],
-            OpCode::ReadHumidity => vec![0x1E],
-            OpCode::ReadBool => vec![0x1F],
-            OpCode::Actuate => vec![0x20],
-            OpCode::MakeClosure(upvalue_count) => vec![0x21, upvalue_count],
+            OpCode::Return => vec![0x09],
+            OpCode::Add => vec![0x10],
+            OpCode::Sub => vec![0x11],
+            OpCode::Mul => vec![0x12],
+            OpCode::Div => vec![0x13],
+            OpCode::Mod => vec![0x14],
+            OpCode::Eq => vec![0x15],
+            OpCode::Ne => vec![0x16],
+            OpCode::Lt => vec![0x17],
+            OpCode::Gt => vec![0x18],
+            OpCode::Le => vec![0x19],
+            OpCode::Ge => vec![0x1A],
+            OpCode::And => vec![0x1B],
+            OpCode::Or => vec![0x1C],
+            OpCode::Not => vec![0x1D],
+            OpCode::GateOn => vec![0x20],
+            OpCode::GateOff => vec![0x21],
+            OpCode::GateToggle => vec![0x22],
+            OpCode::ReadTemp => vec![0x23],
+            OpCode::ReadHumidity => vec![0x24],
+            OpCode::ReadBool => vec![0x25],
+            OpCode::Actuate => vec![0x26],
+            OpCode::MakeClosure(upvalue_count) => vec![0x30, upvalue_count],
             OpCode::Halt => vec![0xFF],
         }
     }
@@ -184,28 +187,28 @@ impl TryFrom<u8> for OpCode {
             0x09 => Ok(OpCode::JmpIfNot(0)),
             0x0A => Ok(OpCode::Call(0, 0)),
             0x0B => Ok(OpCode::Return),
-            0x0C => Ok(OpCode::Add),
-            0x0D => Ok(OpCode::Sub),
-            0x0E => Ok(OpCode::Mul),
-            0x0F => Ok(OpCode::Div),
-            0x10 => Ok(OpCode::Mod),
-            0x11 => Ok(OpCode::Eq),
-            0x12 => Ok(OpCode::Ne),
-            0x13 => Ok(OpCode::Lt),
-            0x14 => Ok(OpCode::Gt),
-            0x15 => Ok(OpCode::Le),
-            0x16 => Ok(OpCode::Ge),
-            0x17 => Ok(OpCode::And),
-            0x18 => Ok(OpCode::Or),
-            0x19 => Ok(OpCode::Not),
-            0x1A => Ok(OpCode::GateOn),
-            0x1B => Ok(OpCode::GateOff),
-            0x1C => Ok(OpCode::GateToggle),
-            0x1D => Ok(OpCode::ReadTemp),
-            0x1E => Ok(OpCode::ReadHumidity),
-            0x1F => Ok(OpCode::ReadBool),
-            0x20 => Ok(OpCode::Actuate),
-            0x21 => Ok(OpCode::MakeClosure(0)),
+            0x10 => Ok(OpCode::Add),
+            0x11 => Ok(OpCode::Sub),
+            0x12 => Ok(OpCode::Mul),
+            0x13 => Ok(OpCode::Div),
+            0x14 => Ok(OpCode::Mod),
+            0x15 => Ok(OpCode::Eq),
+            0x16 => Ok(OpCode::Ne),
+            0x17 => Ok(OpCode::Lt),
+            0x18 => Ok(OpCode::Gt),
+            0x19 => Ok(OpCode::Le),
+            0x1A => Ok(OpCode::Ge),
+            0x1B => Ok(OpCode::And),
+            0x1C => Ok(OpCode::Or),
+            0x1D => Ok(OpCode::Not),
+            0x1E => Ok(OpCode::GateOn),
+            0x1F => Ok(OpCode::GateOff),
+            0x20 => Ok(OpCode::GateToggle),
+            0x21 => Ok(OpCode::ReadTemp),
+            0x22 => Ok(OpCode::ReadHumidity),
+            0x23 => Ok(OpCode::ReadBool),
+            0x24 => Ok(OpCode::Actuate),
+            0x30 => Ok(OpCode::MakeClosure(0)),
             0xFF => Ok(OpCode::Halt),
             _ => Err(VMError::InvalidBytecode(format!("unknown opcode: {byte:#x}"))),
         }
@@ -265,49 +268,6 @@ pub struct Function {
     pub constants: Vec<Value>,
 }
 
-pub struct NativeFn {
-    pub name: String,
-    pub arity: u8,
-    #[allow(dead_code)]
-    fun: Box<dyn Fn(&mut VM) -> Result<Value, VMError> + Send + Sync>,
-}
-
-impl std::fmt::Debug for NativeFn {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("NativeFn")
-            .field("name", &self.name)
-            .field("arity", &self.arity)
-            .finish()
-    }
-}
-
-
-
-impl PartialEq for NativeFn {
-    fn eq(&self, other: &Self) -> bool {
-        self.name == other.name && self.arity == other.arity
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Frame
-// ---------------------------------------------------------------------------
-
-#[derive(Debug, Clone)]
-pub struct Frame {
-    locals: Vec<Value>,
-    return_pc: usize,
-}
-
-impl Frame {
-    fn new(locals: usize, return_pc: usize) -> Self {
-        Self {
-            locals: vec![Value::Unit; locals],
-            return_pc,
-        }
-    }
-}
-
 // ---------------------------------------------------------------------------
 // Compiled Module
 // ---------------------------------------------------------------------------
@@ -332,396 +292,6 @@ impl CompiledModule {
 impl Default for CompiledModule {
     fn default() -> Self {
         Self::new()
-    }
-}
-
-// ---------------------------------------------------------------------------
-// Virtual Machine
-// ---------------------------------------------------------------------------
-
-pub struct VM {
-    code: Vec<u8>,
-    constants: Vec<Value>,
-    locals: Vec<Value>,
-    stack: Vec<Value>,
-    frames: Vec<Frame>,
-    pc: usize,
-    machine: Box<dyn Machine>,
-    max_iterations: u64,
-    iteration_count: u64,
-    functions: HashMap<String, Function>,
-    labels: HashMap<String, usize>,
-}
-
-impl std::fmt::Debug for VM {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("VM")
-            .field("pc", &self.pc)
-            .field("stack", &self.stack)
-            .field("frames", &self.frames)
-            .field("iteration_count", &self.iteration_count)
-            .finish()
-    }
-}
-
-impl VM {
-    pub fn new(machine: Box<dyn Machine>, module: CompiledModule) -> Self {
-        Self {
-            code: module.code,
-            constants: module.constants,
-            locals: Vec::new(),
-            stack: Vec::new(),
-            frames: Vec::new(),
-            pc: 0,
-            machine,
-            max_iterations: 1_000_000,
-            iteration_count: 0,
-            functions: module.functions,
-            labels: HashMap::new(),
-        }
-    }
-    
-    pub fn with_max_iterations(mut self, max: u64) -> Self {
-        self.max_iterations = max;
-        self
-    }
-    
-    pub fn run(&mut self) -> Result<Value, VMError> {
-        loop {
-            if self.iteration_count >= self.max_iterations {
-                return Err(VMError::IterationLimitExceeded { limit: self.max_iterations });
-            }
-            self.iteration_count += 1;
-            
-            if self.pc >= self.code.len() {
-                return Ok(self.stack_pop().unwrap_or(Value::Unit));
-            }
-            
-            let op = self.fetch()?;
-            self.execute(op)?;
-        }
-    }
-    
-    fn fetch(&mut self) -> Result<OpCode, VMError> {
-        if self.pc >= self.code.len() {
-            self.pc = self.code.len() + 1; // prevent infinite loop
-            return Ok(OpCode::Halt);
-        }
-        let byte = self.code[self.pc];
-        self.pc += 1;
-        OpCode::try_from(byte)
-    }
-    
-    fn execute(&mut self, op: OpCode) -> Result<(), VMError> {
-        match op {
-            OpCode::Push => {
-                // Push reads next u16 as constant index
-                let idx = self.read_u16()?;
-                let c = self.constants.get(idx as usize)
-                    .ok_or(VMError::ConstantBounds { index: idx as usize, max: self.constants.len() })?
-                    .clone();
-                self.stack_push(c);
-            }
-            OpCode::Pop => {
-                self.pc += 1;
-                self.stack_pop().ok_or(VMError::StackUnderflow { opcode: OpCode::Pop })?;
-            }
-            OpCode::Dup => {
-                self.pc += 1;
-                let top = self.stack_peek()?.clone();
-                self.stack_push(top);
-            }
-            OpCode::Const(idx) => {
-                let _ = idx; // suppress warning
-                let idx = self.read_u16()?;
-                let c = self.constants.get(idx as usize)
-                    .ok_or(VMError::ConstantBounds { index: idx as usize, max: self.constants.len() })?
-                    .clone();
-                self.stack_push(c);
-            }
-            OpCode::Load(idx) => {
-                let _idx = idx;
-                self.pc += 1; // advance past opcode
-                let actual_idx = self.code[self.pc] as usize;
-                self.pc += 1; // advance past index byte
-                let v = self.locals.get(actual_idx)
-                    .ok_or(VMError::LocalBounds { index: actual_idx, max: self.locals.len() })?
-                    .clone();
-                self.stack_push(v);
-            }
-            OpCode::Store(idx) => {
-                let _idx = idx;
-                self.pc += 1; // advance past opcode
-                let actual_idx = self.code[self.pc] as usize;
-                self.pc += 1; // advance past index byte
-                let v = self.stack_pop()
-                    .ok_or(VMError::StackUnderflow { opcode: OpCode::Store(idx) })?;
-                // Auto-expand locals if needed
-                while self.locals.len() <= actual_idx {
-                    self.locals.push(Value::Unit);
-                }
-                self.locals[actual_idx] = v;
-            }
-            OpCode::LoadArg(idx) => {
-                // Load argument from current frame
-                let frame = self.frames.last_mut()
-                    .ok_or(VMError::StackUnderflow { opcode: OpCode::LoadArg(idx) })?;
-                let v = frame.locals.get(idx as usize)
-                    .ok_or(VMError::LocalBounds { index: idx as usize, max: frame.locals.len() })?
-                    .clone();
-                self.stack_push(v);
-            }
-            OpCode::Jmp(offset) => {
-                self.pc = self.pc.wrapping_add(offset as usize);
-            }
-            OpCode::JmpIf(offset) => {
-                let cond = self.pop_bool()?;
-                if cond {
-                    self.pc = self.pc.wrapping_add(offset as usize);
-                }
-            }
-            OpCode::JmpIfNot(offset) => {
-                let cond = self.pop_bool()?;
-                if !cond {
-                    self.pc = self.pc.wrapping_add(offset as usize);
-                }
-            }
-            OpCode::Call(arg_count, local_count) => {
-                let func = self.stack_pop()
-                    .ok_or(VMError::StackUnderflow { opcode: OpCode::Call(arg_count, local_count) })?;
-                
-                match func {
-                    Value::Function(ref f) => {
-                        // Save current frame
-                        let old_locals = std::mem::replace(&mut self.locals, vec![Value::Unit; f.locals]);
-                        let frame = Frame::new(old_locals.len(), self.pc);
-                        self.frames.push(frame);
-                        
-                        // Pop arguments in reverse (they were pushed in order)
-                        for i in (0..arg_count).rev() {
-                            let arg = self.stack_pop()
-                                .ok_or(VMError::StackUnderflow { opcode: OpCode::Call(arg_count, local_count) })?;
-                            if i as usize >= f.locals {
-                                return Err(VMError::LocalBounds { index: i as usize, max: f.locals });
-                            }
-                            self.locals[i as usize] = arg;
-                        }
-                        
-                        // For missing args, leave as Unit
-                        self.pc = 0; // Would need function's code start - simplified for now
-                    }
-                    _ => return Err(VMError::TypeError { expected: "Function", got: func }),
-                }
-            }
-            OpCode::Return => {
-                let result = self.stack_pop().unwrap_or(Value::Unit);
-                if let Some(frame) = self.frames.pop() {
-                    self.locals = frame.locals;
-                    self.pc = frame.return_pc;
-                }
-                self.stack_push(result);
-                return Ok(()); // Don't advance PC
-            }
-            OpCode::Add => {
-                self.pc += 1;
-                let b = self.pop_number()?;
-                let a = self.pop_number()?;
-                self.stack_push(Value::Number(a + b));
-            }
-            OpCode::Sub => {
-                self.pc += 1;
-                let b = self.pop_number()?;
-                let a = self.pop_number()?;
-                self.stack_push(Value::Number(a - b));
-            }
-            OpCode::Mul => {
-                self.pc += 1;
-                let b = self.pop_number()?;
-                let a = self.pop_number()?;
-                self.stack_push(Value::Number(a * b));
-            }
-            OpCode::Div => {
-                self.pc += 1;
-                let b = self.pop_number()?;
-                let a = self.pop_number()?;
-                if b == 0.0 {
-                    return Err(VMError::DivisionByZero);
-                }
-                self.stack_push(Value::Number(a / b));
-            }
-            OpCode::Mod => {
-                self.pc += 1;
-                let b = self.pop_number()?;
-                let a = self.pop_number()?;
-                self.stack_push(Value::Number(a % b));
-            }
-            OpCode::Eq => {
-                self.pc += 1;
-                let b = self.stack_pop().unwrap_or(Value::Unit);
-                let a = self.stack_pop().unwrap_or(Value::Unit);
-                self.stack_push(Value::Bool(a == b));
-            }
-            OpCode::Ne => {
-                self.pc += 1;
-                let b = self.stack_pop().unwrap_or(Value::Unit);
-                let a = self.stack_pop().unwrap_or(Value::Unit);
-                self.stack_push(Value::Bool(a != b));
-            }
-            OpCode::Lt => {
-                self.pc += 1;
-                let b = self.pop_number()?;
-                let a = self.pop_number()?;
-                self.stack_push(Value::Bool(a < b));
-            }
-            OpCode::Gt => {
-                self.pc += 1;
-                let b = self.pop_number()?;
-                let a = self.pop_number()?;
-                self.stack_push(Value::Bool(a > b));
-            }
-            OpCode::Le => {
-                self.pc += 1;
-                let b = self.pop_number()?;
-                let a = self.pop_number()?;
-                self.stack_push(Value::Bool(a <= b));
-            }
-            OpCode::Ge => {
-                self.pc += 1;
-                let b = self.pop_number()?;
-                let a = self.pop_number()?;
-                self.stack_push(Value::Bool(a >= b));
-            }
-            OpCode::And => {
-                self.pc += 1;
-                let b = self.pop_bool()?;
-                let a = self.pop_bool()?;
-                self.stack_push(Value::Bool(a && b));
-            }
-            OpCode::Or => {
-                self.pc += 1;
-                let b = self.pop_bool()?;
-                let a = self.pop_bool()?;
-                self.stack_push(Value::Bool(a || b));
-            }
-            OpCode::Not => {
-                self.pc += 1;
-                let a = self.pop_bool()?;
-                self.stack_push(Value::Bool(!a));
-            }
-            OpCode::GateOn => {
-                self.pc += 1;
-                let id = self.pop_string()?;
-                self.machine.set_gate(&id, "on")
-                    .map_err(|e| VMError::MachineError(e.to_string()))?;
-            }
-            OpCode::GateOff => {
-                self.pc += 1;
-                let id = self.pop_string()?;
-                self.machine.set_gate(&id, "off")
-                    .map_err(|e| VMError::MachineError(e.to_string()))?;
-            }
-            OpCode::GateToggle => {
-                self.pc += 1;
-                let id = self.pop_string()?;
-                self.machine.set_gate(&id, "toggle")
-                    .map_err(|e| VMError::MachineError(e.to_string()))?;
-            }
-            OpCode::ReadTemp => {
-                self.pc += 1;
-                let id = self.pop_string()?;
-                let temp = self.machine.read_sensor(&id)
-                    .map_err(|e| VMError::MachineError(e.to_string()))?;
-                self.stack_push(Value::Number(temp));
-            }
-            OpCode::ReadHumidity => {
-                self.pc += 1;
-                let id = self.pop_string()?;
-                // Humidity sensors typically also read via read_sensor
-                let val = self.machine.read_sensor(&id)
-                    .map_err(|e| VMError::MachineError(e.to_string()))?;
-                self.stack_push(Value::Number(val));
-            }
-            OpCode::ReadBool => {
-                self.pc += 1;
-                let id = self.pop_string()?;
-                let val = self.machine.read_sensor(&id)
-                    .map_err(|e| VMError::MachineError(e.to_string()))?;
-                self.stack_push(Value::Bool(val != 0.0));
-            }
-            OpCode::Actuate => {
-                self.pc += 1;
-                // Actuate pops a value and an id, sends actuation command
-                let _val = self.stack_pop().unwrap_or(Value::Unit);
-                let _id = self.stack_pop().unwrap_or(Value::Unit);
-                // Actuator implementation would go here
-            }
-            OpCode::MakeClosure(upvalue_count) => {
-                self.pc += 1;
-                // Create a closure capturing upvalues
-                let _upvalues: Vec<Value> = (0..upvalue_count)
-                    .map(|_| self.stack_pop().unwrap_or(Value::Unit))
-                    .collect();
-                // For now, create a placeholder function
-                let func = Function {
-                    arity: upvalue_count,
-                    locals: 0,
-                    code: Vec::new(),
-                    constants: Vec::new(),
-                };
-                self.stack_push(Value::Function(func));
-            }
-            OpCode::Halt => {
-                self.pc = self.code.len() + 1; // force exit on next fetch
-                return Ok(());
-            }
-            OpCode::Push => {
-                // Already handled above - this branch is unreachable but compiler doesn't know
-            }
-        }
-        Ok(())
-    }
-    
-    fn read_u16(&mut self) -> Result<u16, VMError> {
-        if self.pc + 1 >= self.code.len() {
-            return Err(VMError::InvalidBytecode("unexpected end of bytecode".to_string()));
-        }
-        let hi = self.code[self.pc] as u16;
-        let lo = self.code[self.pc + 1] as u16;
-        self.pc += 2;
-        Ok((hi << 8) | lo)
-    }
-    
-    fn stack_push(&mut self, v: Value) {
-        self.stack.push(v);
-    }
-    
-    fn stack_pop(&mut self) -> Option<Value> {
-        self.stack.pop()
-    }
-    
-    fn stack_peek(&self) -> Result<Value, VMError> {
-        self.stack.last().cloned()
-            .ok_or(VMError::StackUnderflow { opcode: OpCode::Pop })
-    }
-    
-    fn pop_number(&mut self) -> Result<f64, VMError> {
-        self.stack_pop()
-            .and_then(|v| v.as_number())
-            .ok_or_else(|| VMError::TypeError { expected: "Number", got: self.stack.last().cloned().unwrap_or(Value::Unit) })
-    }
-    
-    fn pop_bool(&mut self) -> Result<bool, VMError> {
-        Ok(self.stack_pop()
-            .map(|v| v.as_bool())
-            .unwrap_or(false))
-    }
-    
-    fn pop_string(&mut self) -> Result<String, VMError> {
-        match self.stack_pop() {
-            Some(Value::String(s)) => Ok(s),
-            Some(v) => Err(VMError::TypeError { expected: "String", got: v }),
-            None => Err(VMError::StackUnderflow { opcode: OpCode::Pop }),
-        }
     }
 }
 
@@ -866,9 +436,16 @@ impl Compiler {
                     ">" => self.emit(OpCode::Gt),
                     "<=" => self.emit(OpCode::Le),
                     ">=" => self.emit(OpCode::Ge),
-                    "&&" => self.emit(OpCode::And),
-                    "||" => self.emit(OpCode::Or),
+                    "&&" | "and" => self.emit(OpCode::And),
+                    "||" | "or" => self.emit(OpCode::Or),
                     "!" => self.emit(OpCode::Not),
+                    _ => return Err(CompileError::UnsupportedOperator(op.clone())),
+                }
+            }
+            MLExpr::UnaryOp { op, operand } => {
+                self.compile_expr(operand)?;
+                match op.as_str() {
+                    "not" | "!" => self.emit(OpCode::Not),
                     _ => return Err(CompileError::UnsupportedOperator(op.clone())),
                 }
             }
@@ -1107,8 +684,7 @@ pub fn disassemble(code: &[u8], constants: &[Value]) -> String {
 pub fn run(source: &str) -> Result<Value, Box<dyn std::error::Error>> {
     let ast = MLExpr::parse(source)?;
     let module = Compiler::compile(&ast)?;
-    let machine = Box::new(MockMachine::new());
-    let mut vm = VM::new(machine, module);
+    let mut vm = VM::new(module.code, module.constants);
     vm.run().map_err(|e| Box::new(e) as Box<dyn std::error::Error>)
 }
 
@@ -1138,8 +714,7 @@ mod tests {
             println!("{}", disassemble(&module.code, &module.constants));
         }
         
-        let machine = Box::new(MockMachine::new());
-        let mut vm = VM::new(machine, module);
+        let mut vm = VM::new(module.code, module.constants);
         let result = vm.run();
         
         match result {
@@ -1210,8 +785,7 @@ mod tests {
         let ast = ml_core::MLExpr::parse(source).unwrap();
         let module = Compiler::compile(&ast).unwrap();
         eprintln!("test_let bytecode: {:02x?}", module.code);
-        let machine = Box::new(MockMachine::new());
-        let mut vm = VM::new(machine, module);
+        let mut vm = VM::new(module.code, module.constants);
         let result = vm.run();
         eprintln!("test_let result: {:?}", result);
         test_vm(source, Value::Number(15.0));

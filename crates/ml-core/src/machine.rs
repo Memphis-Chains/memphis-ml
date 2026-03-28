@@ -222,6 +222,16 @@ impl<M: Machine> Runtime<M> {
                 };
                 Ok(MLValue::Number(n))
             }
+            MLExpr::UnaryOp { op, operand } => {
+                let v = self.eval(*operand)?;
+                match op.as_str() {
+                    "not" | "!" => {
+                        let b = v.as_bool().ok_or_else(|| RuntimeError::TypeMismatch("bool".into()))?;
+                        Ok(MLValue::Bool(!b))
+                    }
+                    _ => Err(RuntimeError::TypeMismatch(op)),
+                }
+            }
         }
     }
 

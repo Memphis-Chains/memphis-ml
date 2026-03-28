@@ -93,7 +93,8 @@ impl Parser {
             TokenKind::Plus | TokenKind::Minus | TokenKind::Star | TokenKind::Slash
             | TokenKind::Percent | TokenKind::Eq | TokenKind::Neq
             | TokenKind::Gt | TokenKind::Lt | TokenKind::Gte | TokenKind::Lte
-            | TokenKind::And | TokenKind::Or | TokenKind::Not => self.parse_binary_op(),
+            | TokenKind::And | TokenKind::Or => self.parse_binary_op(),
+            TokenKind::Not => self.parse_unary_op(),
             TokenKind::Atom => {
                 let name = self.current().unwrap().text.clone();
                 self.advance();
@@ -107,6 +108,17 @@ impl Parser {
             }
             _ => Err(ParseError::UnexpectedToken(self.current().unwrap().text.clone())),
         }
+    }
+
+    fn parse_unary_op(&mut self) -> Result<MLExpr, ParseError> {
+        let op = match self.current().cloned().ok_or(ParseError::UnexpectedEof)?.kind {
+            TokenKind::Not => "not".into(),
+            _ => return Err(ParseError::UnexpectedToken(self.current().unwrap().text.clone())),
+        };
+        self.advance();
+        let operand = Box::new(self.parse_expr()?);
+        self.expect(TokenKind::RParen)?;
+        Ok(MLExpr::UnaryOp { op, operand })
     }
 
     fn parse_binary_op(&mut self) -> Result<MLExpr, ParseError> {
