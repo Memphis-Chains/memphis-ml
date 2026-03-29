@@ -96,13 +96,24 @@ impl CompositeMachine {
     }
 
     fn find_sensor_index(&self, id: &str) -> Option<usize> {
-        if let Some(idx) = self.sensors.iter().position(|s| s.supports(id, SensorKind::Temperature)) {
-            return Some(idx);
-        }
-        if let Some(idx) = self.sensors.iter().position(|s| s.supports(id, SensorKind::Humidity)) {
-            return Some(idx);
-        }
-        self.sensors.iter().position(|s| s.supports(id, SensorKind::Bool))
+        // ML convention: sensor id encodes type as prefix (e.g. "temp.living_room", "humidity.bathroom", "state.gate1")
+        let kind = if id.starts_with("temp.") {
+            SensorKind::Temperature
+        } else if id.starts_with("humidity.") {
+            SensorKind::Humidity
+        } else if id.starts_with("state.") {
+            SensorKind::Bool
+        } else {
+            // Fallback: try Temperature first, then Humidity, then Bool
+            if let Some(idx) = self.sensors.iter().position(|s| s.supports(id, SensorKind::Temperature)) {
+                return Some(idx);
+            }
+            if let Some(idx) = self.sensors.iter().position(|s| s.supports(id, SensorKind::Humidity)) {
+                return Some(idx);
+            }
+            return self.sensors.iter().position(|s| s.supports(id, SensorKind::Bool));
+        };
+        self.sensors.iter().position(|s| s.supports(id, kind.clone()))
     }
 
     fn find_actuator_index(&self, id: &str) -> Option<usize> {

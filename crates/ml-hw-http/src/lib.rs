@@ -64,34 +64,40 @@ impl Sensor for HttpBackend {
         let body: serde_json::Value = self
             .get(&format!("/sensors/{}/temp", id))?
             .parse()
-            .map_err(|e| HardwareError::Io(format!("json parse error: {}", e)))?;
+            .map_err(|e| HardwareError::Io(format!("HTTP response not JSON: {}", e)))?;
         body["value"]
             .as_f64()
-            .ok_or_else(|| HardwareError::Unavailable("temp value not a number".into()))
+            .ok_or_else(|| HardwareError::Unavailable(format!("temp value '{}' is not a number", body["value"])))
     }
 
     fn read_humidity(&mut self, id: &str) -> Result<f64, HardwareError> {
         let body: serde_json::Value = self
             .get(&format!("/sensors/{}/humidity", id))?
             .parse()
-            .map_err(|e| HardwareError::Io(format!("json parse error: {}", e)))?;
+            .map_err(|e| HardwareError::Io(format!("HTTP response not JSON: {}", e)))?;
         body["value"]
             .as_f64()
-            .ok_or_else(|| HardwareError::Unavailable("humidity value not a number".into()))
+            .ok_or_else(|| HardwareError::Unavailable(format!("humidity value '{}' is not a number", body["value"])))
     }
 
     fn read_bool(&mut self, id: &str) -> Result<bool, HardwareError> {
         let body: serde_json::Value = self
             .get(&format!("/sensors/{}/state", id))?
             .parse()
-            .map_err(|e| HardwareError::Io(format!("json parse error: {}", e)))?;
+            .map_err(|e| HardwareError::Io(format!("HTTP response not JSON: {}", e)))?;
         body["value"]
             .as_bool()
-            .ok_or_else(|| HardwareError::Unavailable("bool value not a boolean".into()))
+            .ok_or_else(|| HardwareError::Unavailable(format!("state value '{}' is not a boolean", body["value"])))
     }
 
-    fn supports(&self, _id: &str, _kind: SensorKind) -> bool {
-        true // optimistic - will fail at read time if not supported
+    fn supports(&self, id: &str, kind: SensorKind) -> bool {
+        // ML convention: id prefix determines sensor type
+        match kind {
+            SensorKind::Temperature => id.starts_with("temp."),
+            SensorKind::Humidity => id.starts_with("humidity."),
+            SensorKind::Bool => id.starts_with("state."),
+            SensorKind::Custom(_) => true, // optimistic
+        }
     }
 }
 
