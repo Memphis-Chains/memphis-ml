@@ -7,3 +7,10 @@ edition = "2021"
 ml-core = { path = "../ml-core" }
 thiserror = "2"
 serde = { version = "1", features = ["derive"] }
+
+[dev-dependencies]
+criterion = "0.5"
+
+[[bench]]
+name = "bench"
+harness = false
