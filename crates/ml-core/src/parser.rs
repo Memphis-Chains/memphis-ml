@@ -55,7 +55,14 @@ impl Parser {
             }
             TokenKind::True => { self.advance(); Ok(MLExpr::Bool(true)) }
             TokenKind::False => { self.advance(); Ok(MLExpr::Bool(false)) }
-            TokenKind::Atom => { self.advance(); Ok(MLExpr::Var(tok.text)) }
+            TokenKind::Atom => {
+                self.advance();
+                if tok.text == "nil" {
+                    Ok(MLExpr::Nil)
+                } else {
+                    Ok(MLExpr::Var(tok.text))
+                }
+            }
             TokenKind::LParen => self.parse_list(),
             TokenKind::LBracket => self.parse_sequence(),
             _ => Err(ParseError::UnexpectedToken(tok.text)),
@@ -90,6 +97,7 @@ impl Parser {
             TokenKind::Call => self.parse_call(),
             TokenKind::Fn => self.parse_fn(),
             TokenKind::Begin => self.parse_begin(),
+            TokenKind::Return => self.parse_return(),
             TokenKind::Plus | TokenKind::Minus | TokenKind::Star | TokenKind::Slash
             | TokenKind::Percent | TokenKind::Eq | TokenKind::Neq
             | TokenKind::Gt | TokenKind::Lt | TokenKind::Gte | TokenKind::Lte
@@ -267,6 +275,13 @@ impl Parser {
             Some(n) => Ok(MLExpr::Defn { name: n, args, body }),
             None => Ok(MLExpr::Fn { args, body }),
         }
+    }
+
+    fn parse_return(&mut self) -> Result<MLExpr, ParseError> {
+        self.advance(); // consume 'return'
+        let value = Box::new(self.parse_expr()?);
+        self.expect(TokenKind::RParen)?;
+        Ok(MLExpr::Return(value))
     }
 
     fn parse_begin(&mut self) -> Result<MLExpr, ParseError> {

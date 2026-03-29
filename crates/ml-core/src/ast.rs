@@ -22,12 +22,36 @@ pub enum MLExpr {
     Begin(Vec<MLExpr>),
     BinaryOp { op: String, left: Box<MLExpr>, right: Box<MLExpr> },
     UnaryOp { op: String, operand: Box<MLExpr> },
+    /// Early return from a function: (return expr)
+    Return(Box<MLExpr>),
+    /// Nil/null value
+    Nil,
 }
 
 impl MLExpr {
     pub fn parse(source: &str) -> Result<Self, crate::error::ParseError> {
         crate::parser::Parser::new(source).parse()
     }
+}
+
+/// An upvalue — a captured variable from an outer scope.
+/// `Local` means the variable is in the current frame (index into locals).
+/// `Upvalue` means the variable is captured from an outer closure.
+#[derive(Debug, Clone, PartialEq)]
+pub enum UpvarKind {
+    /// Captured from the immediate parent scope
+    Local(usize),
+    /// Captured from a nested closure's parent scope
+    Up(usize),
+}
+
+/// A closure: captures its arguments, body, and a map of captured upvalues.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Closure {
+    pub args: Vec<String>,
+    pub body: Box<MLExpr>,
+    /// Captured variables: var_name -> upvalue_kind
+    pub upvars: Vec<(String, UpvarKind)>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -38,6 +62,12 @@ pub enum MLValue {
     String(String),
     /// First-class function: (args, body)
     Fn(Vec<String>, Box<MLExpr>),
+    /// Nil/null value
+    Nil,
+    /// A closure with captured upvalues
+    Closure(Closure),
+    /// Internal sentinel for early return — NOT exposed to ML programs
+    Return(Box<MLValue>),
 }
 
 impl MLValue {
@@ -47,7 +77,8 @@ impl MLValue {
             MLValue::Number(n) => Some(*n != 0.0),
             MLValue::String(s) => Some(!s.is_empty()),
             MLValue::Unit => Some(false),
-            MLValue::Fn(..) => Some(true),
+            MLValue::Fn(..) | MLValue::Closure(..) => Some(true),
+            MLValue::Nil => Some(false),
         }
     }
 
@@ -55,7 +86,7 @@ impl MLValue {
         match self {
             MLValue::Number(n) => Some(*n),
             MLValue::Bool(b) => Some(if *b { 1.0 } else { 0.0 }),
-            MLValue::Fn(..) => Some(1.0),
+            MLValue::Fn(..) | MLValue::Closure(..) => Some(1.0),
             _ => None,
         }
     }

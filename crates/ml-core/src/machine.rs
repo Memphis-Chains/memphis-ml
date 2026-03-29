@@ -4,6 +4,9 @@ use crate::ast::*;
 use crate::error::RuntimeError;
 use std::collections::HashMap;
 
+/// Maximum loop iterations before the runtime aborts with "infinite loop".
+const MAX_LOOP_ITERATIONS: usize = 1_000_000;
+
 pub trait Machine: Send {
     fn set_gate(&mut self, id: &str, state: &str) -> Result<(), RuntimeError>;
     fn read_sensor(&mut self, sensor: &str) -> Result<f64, RuntimeError>;
@@ -72,14 +75,132 @@ impl Machine for MlHalMachine {
 
 pub struct Runtime<M: Machine> {
     pub machine: M,
+    /// Current scope variables
     vars: HashMap<String, MLValue>,
     /// Named function definitions: name -> (params, body)
     functions: HashMap<String, (Vec<String>, MLExpr)>,
+    /// Stack of upvalue sets for closures. Each frame has captured upvars.
+    upvar_stack: Vec<HashMap<String, MLValue>>,
+    /// Loop depth — used to detect runaway loops
+    loop_count: usize,
 }
 
 impl<M: Machine> Runtime<M> {
     pub fn new(machine: M) -> Self {
-        Self { machine, vars: HashMap::new(), functions: HashMap::new() }
+        Self {
+            machine,
+            vars: HashMap::new(),
+            functions: HashMap::new(),
+            upvar_stack: Vec::new(),
+            loop_count: 0,
+        }
+    }
+
+    /// Collect free variables from `body` that are:
+    /// - NOT in `params` (function parameters)
+    /// - NOT in `local_names` (let-bound variables in the current scope)
+    /// - Present in `self.vars` (available in the enclosing scope)
+    fn capture_upvars(&self, body: &MLExpr, params: &[String], local_names: &[String]) -> Vec<(String, UpvarKind)> {
+        let mut captured = Vec::new();
+        let free_vars = Self::free_vars(body, params, local_names);
+        for var_name in free_vars {
+            // Determine if this upvar is from the immediate parent or from a further outer scope
+            let kind = if self.upvar_stack.len() == 1 {
+                UpvarKind::Local(self.upvar_stack[0].len())
+            } else {
+                UpvarKind::Up(self.upvar_stack.len())
+            };
+            if let Some(val) = self.vars.get(&var_name) {
+                captured.push((var_name.clone(), kind.clone()));
+                // Also store the captured value in a local upvar table
+                // (we'll look it up by name at call time)
+            }
+        }
+        captured
+    }
+
+    /// Compute the set of free variables (not locally bound) in an expression.
+    fn free_vars(expr: &MLExpr, params: &[String], local_names: &[String]) -> Vec<String> {
+        match expr {
+            MLExpr::Var(v) => {
+                if !params.contains(v) && !local_names.contains(v) {
+                    vec![v.clone()]
+                } else {
+                    vec![]
+                }
+            }
+            MLExpr::Number(_) | MLExpr::String(_) | MLExpr::Bool(_) | MLExpr::Nil => vec![],
+            MLExpr::Gate { .. } | MLExpr::Read { .. } | MLExpr::Wait { .. } => vec![],
+            MLExpr::Sequence(es) | MLExpr::Begin(es) => {
+                let mut locals = local_names.to_vec();
+                let mut result = Vec::new();
+                for e in es {
+                    let fvs = Self::free_vars(e, params, &locals);
+                    result.extend(fvs);
+                    // Update locals with any let bindings in this expr
+                    if let MLExpr::Let { name, .. } = e {
+                        locals.push(name.clone());
+                    }
+                }
+                result
+            }
+            MLExpr::If { condition, then_branch, else_ } => {
+                let mut result = Self::free_vars(condition, params, local_names);
+                result.extend(Self::free_vars(then_branch, params, local_names));
+                if let Some(e) = else_ {
+                    result.extend(Self::free_vars(e, params, local_names));
+                }
+                result
+            }
+            MLExpr::Let { name, value, body } => {
+                let mut fvs = Self::free_vars(value, params, local_names);
+                let mut new_locals = local_names.to_vec();
+                new_locals.push(name.clone());
+                fvs.extend(Self::free_vars(body, params, &new_locals));
+                fvs
+            }
+            MLExpr::Set { name, value } => {
+                let mut fvs = Self::free_vars(value, params, local_names);
+                if !params.contains(name) && !local_names.contains(name) {
+                    fvs.push(name.clone());
+                }
+                fvs
+            }
+            MLExpr::While { condition, body } => {
+                let mut fvs = Self::free_vars(condition, params, local_names);
+                fvs.extend(Self::free_vars(body, params, local_names));
+                fvs
+            }
+            MLExpr::Fn { args, body } => {
+                let mut new_params = params.to_vec();
+                new_params.extend(args.clone());
+                Self::free_vars(body, &new_params, local_names)
+            }
+            MLExpr::Defn { args, body, .. } => {
+                let mut new_params = params.to_vec();
+                new_params.extend(args.clone());
+                Self::free_vars(body, &new_params, local_names)
+            }
+            MLExpr::Call { name, args } => {
+                let mut result = Vec::new();
+                for a in args {
+                    result.extend(Self::free_vars(a, params, local_names));
+                }
+                if !params.contains(name) && !local_names.contains(name) {
+                    result.push(name.clone());
+                }
+                result
+            }
+            MLExpr::BinaryOp { left, right, .. } => {
+                let mut result = Self::free_vars(left, params, local_names);
+                result.extend(Self::free_vars(right, params, local_names));
+                result
+            }
+            MLExpr::UnaryOp { operand, .. } => {
+                Self::free_vars(operand, params, local_names)
+            }
+            MLExpr::Return(e) => Self::free_vars(e, params, local_names),
+        }
     }
 
     pub fn execute(&mut self, expr: MLExpr) -> Result<MLValue, RuntimeError> {
@@ -125,7 +246,9 @@ impl<M: Machine> Runtime<M> {
                     MLValue::Bool(b) => b.to_string(),
                     MLValue::String(s) => s,
                     MLValue::Unit => "()".into(),
-                    MLValue::Fn(..) => "<fn>".into(),
+                    MLValue::Fn(..) | MLValue::Closure(..) => "<fn>".into(),
+                    MLValue::Nil => "nil".into(),
+                    MLValue::Return(_) => "<return>".into(),
                 };
                 println!("[ML] {}", msg);
                 Ok(MLValue::Unit)
@@ -133,7 +256,6 @@ impl<M: Machine> Runtime<M> {
             MLExpr::Let { name, value, body } => {
                 let val = self.eval(*value)?;
                 // If the value is a function, also register it in self.functions
-                // so it persists after the let binding goes out of scope
                 if let MLValue::Fn(params, fn_body) = &val {
                     self.functions.insert(name.clone(), (params.clone(), *fn_body.clone()));
                 }
@@ -143,25 +265,44 @@ impl<M: Machine> Runtime<M> {
                 Ok(result)
             }
             MLExpr::Var(name) => {
-                self.vars.get(&name).cloned()
-                    .ok_or_else(|| RuntimeError::UndefinedVariable(name))
+                // Look in current vars, then in upvar stack (for closures)
+                if let Some(v) = self.vars.get(&name) {
+                    Ok(v.clone())
+                } else {
+                    // Check upvar stacks (captured closure variables)
+                    for frame in &self.upvar_stack {
+                        if let Some(v) = frame.get(&name) {
+                            return Ok(v.clone());
+                        }
+                    }
+                    Err(RuntimeError::UndefinedVariable(name))
+                }
             }
             MLExpr::Bool(b) => Ok(MLValue::Bool(b)),
             MLExpr::Number(n) => Ok(MLValue::Number(n)),
             MLExpr::String(s) => Ok(MLValue::String(s)),
-            MLExpr::Fn { args, body } => Ok(MLValue::Fn(args, body)),
+            MLExpr::Nil => Ok(MLValue::Nil),
+            MLExpr::Fn { args, body } => {
+                // Capture free variables from enclosing scope
+                let upvars = self.capture_upvars(&body, &args, &[]);
+                Ok(MLValue::Closure(Closure { args, body, upvars }))
+            }
             MLExpr::Defn { name, args, body } => {
-                self.functions.insert(name, (args, *body));
+                self.functions.insert(name.clone(), (args.clone(), *body.clone()));
                 Ok(MLValue::Unit)
             }
             MLExpr::Call { name, args } => {
-                // Look up the function by name in vars (first-class fn value) or functions map
-                let (params, body) = if let Some(MLValue::Fn(params, body)) = self.vars.get(&name) {
-                    (params.clone(), *body.clone())
-                } else if let Some((params, body)) = self.functions.get(&name) {
-                    (params.clone(), body.clone())
-                } else {
-                    return Err(RuntimeError::UndefinedVariable(format!("function: {}", name)));
+                // Look up the function
+                let fval = self.vars.get(&name)
+                    .cloned()
+                    .or_else(|| self.functions.get(&name)
+                        .map(|(a, b)| MLValue::Fn(a.clone(), Box::new(b.clone()))))
+                    .ok_or_else(|| RuntimeError::UndefinedVariable(format!("function: {}", name)))?;
+
+                let (params, body, upvars) = match fval {
+                    MLValue::Fn(params, body) => (params, *body, None),
+                    MLValue::Closure(c) => (c.args, *c.body, Some(c.upvars)),
+                    _ => return Err(RuntimeError::TypeMismatch(format!("not a function: {}", name))),
                 };
 
                 // Evaluate all args
@@ -169,35 +310,72 @@ impl<M: Machine> Runtime<M> {
                     .map(|a| self.eval(a))
                     .collect::<Result<Vec<_>, _>>()?;
 
-                // Bind params to arg_vals
                 if arg_vals.len() != params.len() {
                     return Err(RuntimeError::TypeMismatch(format!(
                         "function '{}' expects {} args but got {}", name, params.len(), arg_vals.len()
                     )));
                 }
 
-                let param_names = params.clone();
+                // Push upvar frame for this closure call
+                let prev_upvar_stack = self.upvar_stack.clone();
+                self.upvar_stack.push(HashMap::new());
+                if let Some(ref uvs) = upvars {
+                    // Copy captured upvar values into the new frame
+                    let frame = self.upvar_stack.last_mut().unwrap();
+                    for (uv_name, _) in uvs {
+                        if let Some(v) = self.vars.get(uv_name) {
+                            frame.insert(uv_name.clone(), v.clone());
+                        }
+                    }
+                }
+
+                // Bind parameters
+                let param_names: Vec<String> = params.clone();
                 for (param, val) in params.into_iter().zip(arg_vals.into_iter()) {
                     self.vars.insert(param, val);
                 }
 
-                // Evaluate body and capture result
+                // Evaluate body and unwrap return value
                 let result = self.eval(body);
 
-                // Remove bound params
-                for param in param_names {
-                    self.vars.remove(&param);
+                // Remove bound params and pop upvar frame
+                for param in &param_names {
+                    self.vars.remove(param);
                 }
+                self.upvar_stack.pop();
 
-                result
+                // Restore previous upvar stack
+                self.upvar_stack = prev_upvar_stack;
+
+                // Handle early return
+                match result {
+                    Ok(MLValue::Return(v)) => Ok(*v),
+                    other => other,
+                }
             }
             MLExpr::Set { name, value } => {
                 let val = self.eval(*value)?;
-                self.vars.insert(name, val);
+                // Check if this is an upvar we're setting (mutate captured variable)
+                let mut found = false;
+                for frame in &mut self.upvar_stack {
+                    if frame.contains_key(&name) {
+                        frame.insert(name.clone(), val.clone());
+                        found = true;
+                        break;
+                    }
+                }
+                if !found {
+                    self.vars.insert(name, val);
+                }
                 Ok(MLValue::Unit)
             }
             MLExpr::While { condition, body } => {
+                self.loop_count = 0;
                 while self.eval_condition(*condition.clone())? {
+                    self.loop_count += 1;
+                    if self.loop_count > self.MAX_LOOP_ITERATIONS {
+                        return Err(RuntimeError::Machine("infinite loop detected (>{MAX_LOOP_ITERATIONS} iterations)".into()));
+                    }
                     self.eval(*body.clone())?;
                 }
                 Ok(MLValue::Unit)
@@ -231,6 +409,10 @@ impl<M: Machine> Runtime<M> {
                     }
                     _ => Err(RuntimeError::TypeMismatch(op)),
                 }
+            }
+            MLExpr::Return(e) => {
+                // Wrap in Return sentinel — caller unwraps it
+                Ok(MLValue::Return(Box::new(self.eval(*e)?)))
             }
         }
     }

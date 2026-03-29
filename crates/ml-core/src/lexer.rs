@@ -15,7 +15,7 @@ pub enum TokenKind {
     // Arithmetic
     Plus, Minus, Star, Slash, Percent,
     // New keywords
-    Fn, While, Set, Begin, Call,
+    Fn, While, Set, Begin, Call, Return,
     // Literals
     String, Number, Atom,
     // End
@@ -115,6 +115,7 @@ pub fn tokenize(source: &str) -> Vec<Token> {
                     "set" => TokenKind::Set,
                     "begin" => TokenKind::Begin,
                     "call" => TokenKind::Call,
+                    "return" => TokenKind::Return,
                     "on" => TokenKind::On,
                     "off" => TokenKind::Off,
                     "toggle" => TokenKind::Toggle,

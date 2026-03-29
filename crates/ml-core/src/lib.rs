@@ -5,6 +5,7 @@ pub mod error;
 pub mod lexer;
 pub mod machine;
 pub mod parser;
+pub mod typecheck;
 
 pub use ast::{MLExpr, MLValue};
 pub use error::{ParseError, RuntimeError};
