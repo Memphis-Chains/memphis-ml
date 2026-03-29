@@ -9,6 +9,7 @@ members = [
   "crates/ml-memphis",
   "crates/ml-cli",
   "crates/ml-p2p",
+  "crates/ml-protocol",
   "crates/ml-vm",
 ]
 
@@ -30,6 +31,7 @@ tracing = "0.1"
 tracing-subscriber = "0.3"
 chrono = { version = "0.4", features = ["serde"] }
 sha2 = "0.10"
+base64 = "0.22"
 
 [profile.release]
 opt-level = 3
