@@ -97,7 +97,6 @@ impl TypeEnv {
             MLExpr::Read { .. } => Type::Number,
             MLExpr::Wait { .. } => Type::Unit,
             MLExpr::Log { .. } => Type::Unit,
-            MLExpr::Unit => Type::Unit, // explicit Unit (shouldn't appear in source)
             MLExpr::Var(name) => {
                 self.vars.get(name).cloned().unwrap_or_else(|| {
                     let tv = self.fresh();
@@ -171,15 +170,21 @@ impl TypeEnv {
             }
             MLExpr::Call { name, args } => {
                 let arg_types: Vec<Type> = args.iter().map(|a| self.infer(a)).collect();
-                // Try to get the function type from env
-                if let Some(fn_type) = self.functions.get(name) {
-                    if let Type::Fn(expected_args, ret) = fn_type {
-                        if expected_args.len() == arg_types.len() {
-                            for (ea, at) in expected_args.iter().zip(arg_types.iter()) {
-                                self.constrain(ea.clone(), at.clone(), format!("arg type mismatch in call to {}", name));
-                            }
-                            return (*ret).clone();
+                // Try to get the function type from env — clone fn_type first to avoid borrow conflict
+                let fn_type_opt = self.functions.get(name).cloned();
+                if let Some(Type::Fn(expected_args, ret_box)) = fn_type_opt {
+                    if expected_args.len() == arg_types.len() {
+                        let arg_constraint_fmts: Vec<(Type, Type, String)> = expected_args
+                            .iter()
+                            .zip(arg_types.iter())
+                            .map(|(ea, at)| (ea.clone(), at.clone(), format!("arg type mismatch in call to {}", name)))
+                            .collect();
+                        // Now do mutable operations (constrain)
+                        for (ea, at, fmt) in arg_constraint_fmts {
+                            self.constrain(ea, at, fmt);
                         }
+                        // Extract Type from Box<Type> via explicit as_ref()
+                        return (*ret_box.as_ref()).clone();
                     }
                 }
                 // Fall back to treating as a first-class call with unknown return
@@ -233,7 +238,10 @@ impl TypeEnv {
     /// Returns a map of type variable names -> resolved types.
     pub fn unify(&mut self) -> HashMap<String, Type> {
         let mut subst = HashMap::new();
-        for constraint in &self.constraints {
+        // Collect new constraints to add separately to avoid borrow conflict
+        let mut new_constraints: Vec<Constraint> = Vec::new();
+
+        for constraint in std::mem::take(&mut self.constraints) {
             let left = self.apply_subst(&constraint.left, &subst);
             let right = self.apply_subst(&constraint.right, &subst);
             if let Type::Var(v) = &left {
@@ -248,21 +256,25 @@ impl TypeEnv {
             // Structural unification for Fn types
             if let (Type::Fn(a1, r1), Type::Fn(a2, r2)) = (&left, &right) {
                 if a1.len() == a2.len() {
+                    let reason = constraint.reason.clone();
                     for (t1, t2) in a1.iter().zip(a2.iter()) {
-                        self.constraints.push(Constraint {
+                        new_constraints.push(Constraint {
                             left: t1.clone(),
                             right: t2.clone(),
-                            reason: constraint.reason.clone(),
+                            reason: reason.clone(),
                         });
                     }
-                    self.constraints.push(Constraint {
+                    new_constraints.push(Constraint {
                         left: *r1.clone(),
                         right: *r2.clone(),
-                        reason: constraint.reason.clone(),
+                        reason,
                     });
                 }
             }
         }
+
+        // Put the new constraints back
+        self.constraints = new_constraints;
         subst
     }
 

@@ -79,6 +79,7 @@ impl MLValue {
             MLValue::Unit => Some(false),
             MLValue::Fn(..) | MLValue::Closure(..) => Some(true),
             MLValue::Nil => Some(false),
+            MLValue::Return(_) => Some(false),
         }
     }
 

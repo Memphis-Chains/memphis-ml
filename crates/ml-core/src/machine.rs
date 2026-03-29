@@ -110,7 +110,7 @@ impl<M: Machine> Runtime<M> {
             } else {
                 UpvarKind::Up(self.upvar_stack.len())
             };
-            if let Some(val) = self.vars.get(&var_name) {
+            if self.vars.get(&var_name).is_some() {
                 captured.push((var_name.clone(), kind.clone()));
                 // Also store the captured value in a local upvar table
                 // (we'll look it up by name at call time)
@@ -200,6 +200,7 @@ impl<M: Machine> Runtime<M> {
                 Self::free_vars(operand, params, local_names)
             }
             MLExpr::Return(e) => Self::free_vars(e, params, local_names),
+            MLExpr::Log { message } => Self::free_vars(message, params, local_names),
         }
     }
 
@@ -266,12 +267,12 @@ impl<M: Machine> Runtime<M> {
             }
             MLExpr::Var(name) => {
                 // Look in current vars, then in upvar stack (for closures)
-                if let Some(v) = self.vars.get(&name) {
+                if let Some(v) = self.vars.get::<str>(&name) {
                     Ok(v.clone())
                 } else {
                     // Check upvar stacks (captured closure variables)
                     for frame in &self.upvar_stack {
-                        if let Some(v) = frame.get(&name) {
+                        if let Some(v) = frame.get::<str>(&name) {
                             return Ok(v.clone());
                         }
                     }
@@ -296,7 +297,7 @@ impl<M: Machine> Runtime<M> {
                 let fval = self.vars.get(&name)
                     .cloned()
                     .or_else(|| self.functions.get(&name)
-                        .map(|(a, b)| MLValue::Fn(a.clone(), Box::new(b.clone()))))
+                        .map(|(a, b): &(Vec<String>, MLExpr)| MLValue::Fn(a.clone(), Box::new(b.clone()))))
                     .ok_or_else(|| RuntimeError::UndefinedVariable(format!("function: {}", name)))?;
 
                 let (params, body, upvars) = match fval {
@@ -321,9 +322,9 @@ impl<M: Machine> Runtime<M> {
                 self.upvar_stack.push(HashMap::new());
                 if let Some(ref uvs) = upvars {
                     // Copy captured upvar values into the new frame
-                    let frame = self.upvar_stack.last_mut().unwrap();
+                    let frame: &mut HashMap<String, MLValue> = self.upvar_stack.last_mut().unwrap();
                     for (uv_name, _) in uvs {
-                        if let Some(v) = self.vars.get(uv_name) {
+                        if let Some(v) = self.vars.get::<str>(uv_name) {
                             frame.insert(uv_name.clone(), v.clone());
                         }
                     }
@@ -358,7 +359,7 @@ impl<M: Machine> Runtime<M> {
                 // Check if this is an upvar we're setting (mutate captured variable)
                 let mut found = false;
                 for frame in &mut self.upvar_stack {
-                    if frame.contains_key(&name) {
+                    if frame.contains_key::<str>(&name) {
                         frame.insert(name.clone(), val.clone());
                         found = true;
                         break;
@@ -373,8 +374,8 @@ impl<M: Machine> Runtime<M> {
                 self.loop_count = 0;
                 while self.eval_condition(*condition.clone())? {
                     self.loop_count += 1;
-                    if self.loop_count > self.MAX_LOOP_ITERATIONS {
-                        return Err(RuntimeError::Machine("infinite loop detected (>{MAX_LOOP_ITERATIONS} iterations)".into()));
+                    if self.loop_count > MAX_LOOP_ITERATIONS {
+                        return Err(RuntimeError::Machine(format!("infinite loop detected (>{MAX_LOOP_ITERATIONS} iterations)")));
                     }
                     self.eval(*body.clone())?;
                 }
@@ -423,7 +424,8 @@ impl<M: Machine> Runtime<M> {
             MLExpr::Number(n) => Ok(n != 0.0),
             MLExpr::String(s) => Ok(!s.is_empty()),
             MLExpr::Var(name) => {
-                self.vars.get(&name).and_then(|v| v.as_bool())
+                self.vars.get(&name)
+                    .and_then(|v: &MLValue| v.as_bool())
                     .ok_or_else(|| RuntimeError::UndefinedVariable(name))
             }
             MLExpr::If { condition, then_branch, else_ } => {
