@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"  # e.g. v1.0.0
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Version tag (e.g. v1.0.0)"
+        required: true
+        type: string
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
+
+jobs:
+  # ── Pre-release validation ────────────────────────────────────────────────
+  preflight:
+    name: Preflight Check
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+
+      - name: Check formatting
+        run: cargo fmt --all -- --check
+
+      - name: Run clippy
+        run: cargo clippy --workspace --all-features -- -D warnings
+
+      - name: Run tests
+        run: cargo test --workspace --all-features
+
+  # ── Cross-platform release builds ─────────────────────────────────────────
+  build:
+    name: Build ${{ matrix.target }}
+    needs: preflight
+    runs-on: ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: ml-cli-ubuntu-x64
+          - runner: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: ml-cli-ubuntu-arm64
+          - runner: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: ml-cli-macos-x64
+          - runner: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: ml-cli-macos-arm64
+          - runner: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: ml-cli-windows-x64.exe
+
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross-compilation tools (Linux arm64)
+        if: matrix.target == 'aarch64-unknown-linux-gnu'
+        run: sudo apt-get update && sudo apt-get install -y gcc-aarch64-linux-gnu
+
+      - name: Build ml-cli for ${{ matrix.target }}
+        run: cargo build --release -p ml-cli --target ${{ matrix.target }}
+
+      - name: Upload ${{ matrix.artifact_name }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: target/${{ matrix.target }}/release/ml-cli
+          retention-days: 5
+
+  # ── Create GitHub Release ─────────────────────────────────────────────────
+  create-release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout sources
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          pattern: "ml-cli-*"
+          path: artifacts/
+          merge-multiple: false
+
+      - name: Package Linux binaries
+        run: |
+          for dir in artifacts/ml-cli-ubuntu-*; do
+            [ -d "$dir" ] || continue
+            base=$(basename "$dir")
+            tar -czf "${base}.tar.gz" -C "$dir" .
+          done
+
+      - name: Package Windows binaries
+        run: |
+          for f in artifacts/ml-cli-windows-*; do
+            [ -f "$f" ] || continue
+            base=$(basename "$f")
+            powershell -Command "Compress-Archive -Path '$f' -DestinationPath '${base}.zip' -Force"
+          done
+
+      - name: Create GitHub Release
+        if: github.event_name == 'push'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/ml-cli-ubuntu-*.tar.gz
+            artifacts/ml-cli-macos-*.tar.gz
+            artifacts/ml-cli-windows-*.zip
+          generate_release_notes: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
