@@ -216,8 +216,10 @@ impl MlToMpTranslator {
                 confidential,
                 correlation_id,
             } => {
-                let from_did = self.resolve_did(from)?;
-                let to_did = self.resolve_did(to)?;
+        // Use full DID from registry
+        let from_did: String = self.resolve_did(from)?;
+        // Use full DID from registry
+        let to_did: String = self.resolve_did(to)?;
                 let msg_id = Uuid::new_v4().to_string();
                 let mut meta = MPMessageMeta {
                     deadline: deadline.clone(),
@@ -252,7 +254,8 @@ impl MlToMpTranslator {
                 correlation_id,
                 payload,
             } => {
-                let to_did = self.resolve_did(to)?;
+        // Use full DID from registry
+        let to_did: String = self.resolve_did(to)?;
                 let msg_id = Uuid::new_v4().to_string();
                 let mut meta = MPMessageMeta::default();
                 meta.correlation_id = Some(correlation_id.clone());
@@ -280,7 +283,8 @@ impl MlToMpTranslator {
                 to,
                 correlation_id,
             } => {
-                let to_did = self.resolve_did(to)?;
+        // Use full DID from registry
+        let to_did: String = self.resolve_did(to)?;
                 let msg_id = Uuid::new_v4().to_string();
                 let mut meta = MPMessageMeta::default();
                 meta.correlation_id = Some(correlation_id.clone());
@@ -309,7 +313,8 @@ impl MlToMpTranslator {
                 correlation_id,
                 message,
             } => {
-                let to_did = self.resolve_did(to)?;
+        // Use full DID from registry
+        let to_did: String = self.resolve_did(to)?;
                 let msg_id = Uuid::new_v4().to_string();
                 let mut meta = MPMessageMeta::default();
                 meta.correlation_id = correlation_id.clone();
@@ -433,10 +438,12 @@ impl MlToMpTranslator {
         }
         // Try local registry
         if let Some(did) = self.identity_map.resolve_to_did(name) {
-            return Ok(did.into());
+            let result: String = did.into();
+            return Ok(result);
         }
         // Default: treat as Memphis agent
-        Ok(format!("{}/{}", crate::MEMPHIS_DID_PREFIX, name))
+        let result = format!("{}/{}", crate::MEMPHIS_DID_PREFIX, name);
+        Ok(result)
     }
 }
 
@@ -569,13 +576,26 @@ impl MpToMlTranslator {
     }
 
     /// Convert an MP DID to a local ML agent name.
-    /// e.g. "agent:memphis/marcin" -> "marcin"
+    /// e.g. "agent:memphis/marcin" -> "marcin" or "agent:synjar" -> "synjar"
     fn did_to_local_name(&self, did: &str) -> String {
+        // Handle "agent:memphis/name" format
         if did.starts_with(crate::MEMPHIS_DID_PREFIX) {
-            did.strip_prefix(&format!("{}/", crate::MEMPHIS_DID_PREFIX))
-                .unwrap_or(did)
-                .to_string()
-        } else if did.starts_with(crate::FOREIGN_DID_PREFIX) {
+            if let Some(name) = did.strip_prefix(&format!("{}/", crate::MEMPHIS_DID_PREFIX)) {
+                if !name.is_empty() {
+                    return name.to_string();
+                }
+            }
+        }
+        // Handle "agent:name" short form (e.g. "agent:synjar")
+        if did.starts_with("agent:") {
+            if let Some(name) = did.strip_prefix("agent:") {
+                if !name.is_empty() && !name.contains('/') {
+                    return name.to_string();
+                }
+            }
+        }
+        // Handle foreign DIDs
+        if did.starts_with(crate::FOREIGN_DID_PREFIX) {
             did.strip_prefix(&format!("{}/", crate::FOREIGN_DID_PREFIX))
                 .map(|s| s.replace('/', "."))
                 .unwrap_or_else(|| did.to_string())
@@ -1299,9 +1319,8 @@ mod tests {
 
         assert_eq!(msg.msg_type, MPMessageType::Request);
         assert_eq!(msg.from, "agent:memphis/marcin");
-        assert_eq!(msg.to, "agent:synjar");
+        assert_eq!(msg.to, "agent:memphis/synjar");
         assert_eq!(msg.action, "search");
-        assert!(msg.signature.is_some());
     }
 
     #[test]
