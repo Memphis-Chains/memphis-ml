@@ -634,6 +634,7 @@ pub mod error {
                     write!(f, "identity not found: {s}")
                 }
             }
+        }
     }
 
     impl std::error::Error for ProtocolError {}
