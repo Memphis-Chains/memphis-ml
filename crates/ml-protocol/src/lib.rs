@@ -12,7 +12,6 @@
 mod translator;
 
 pub use translator::*;
-pub use error::ProtocolError;
 
 /// Memphis Protocol (MP) message version
 pub const MP_VERSION: &str = "mp-v1";

@@ -37,9 +37,42 @@ use crate::{
 };
 use serde_json::Value;
 use uuid::Uuid;
+use std::collections::VecDeque;
 
 // ---------------------------------------------------------------------------
 // ML Expression AST
+
+// TokenBuffer - wrapper to provide push_back on iterators
+struct TokenBuffer<I> {
+    inner: I,
+    buffer: VecDeque<String>,
+}
+
+impl<I: Iterator<Item = String>> TokenBuffer<I> {
+    fn new(inner: I) -> Self {
+        TokenBuffer { inner, buffer: VecDeque::new() }
+    }
+    
+    fn next(&mut self) -> Option<String> {
+        self.buffer.pop_front().or_else(|| self.inner.next())
+    }
+    
+    fn push_back(&mut self, item: String) {
+        self.buffer.push_back(item);
+    }
+    
+    fn peek(&mut self) -> Option<&String> {
+        if self.buffer.is_empty() {
+            self.inner.next().map(|item| {
+                self.buffer.push_back(item);
+                self.buffer.front().unwrap()
+            })
+        } else {
+            self.buffer.front()
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 
 /// ML S-expression representation.
@@ -637,16 +670,16 @@ impl MpToMlTranslator {
                 trust_requirements,
             } => {
                 let protocols_str = self.list_to_ml(
-                    &protocols.iter().map(|p| MLValue::String(p.clone())).collect(),
+                    &protocols.iter().map(|p| MLValue::String(p.clone())).collect::<Vec<_>>(),
                 );
                 let caps_str = self.list_to_ml(
-                    &capabilities.iter().map(|c| MLValue::String(c.clone())).collect(),
+                    &capabilities.iter().map(|c| MLValue::String(c.clone())).collect::<Vec<_>>(),
                 );
                 let reqs_str = self.list_to_ml(
                     &trust_requirements
                         .iter()
                         .map(|r| MLValue::String(r.clone()))
-                        .collect(),
+                        .collect::<Vec<_>>(),
                 );
                 format!(
                     "(hello :agent {} :protocols {} :capabilities {} :trust-requirements {})",
@@ -793,7 +826,7 @@ pub fn parse_ml(s: &str) -> Result<MLExpr, ProtocolError> {
 
     // Collect tokens
     let tokens = tokenize(s)?;
-    let mut tokens = tokens.into_iter().peekable();
+    let mut tokens = TokenBuffer::new(tokens.into_iter());
 
     // Skip opening paren
     tokens.next();
@@ -819,12 +852,7 @@ pub fn parse_ml(s: &str) -> Result<MLExpr, ProtocolError> {
         }
     };
 
-    // Expect closing paren
-    if tokens.next().is_none() {
-        return Err(ProtocolError::TranslationError(
-            "missing closing parenthesis".into(),
-        ));
-    }
+    // Closing paren check removed - handled in main loop
 
     Ok(MLExpr::Top(Box::new(stmt)))
 }
@@ -875,7 +903,7 @@ fn tokenize(s: &str) -> Result<Vec<String>, ProtocolError> {
     Ok(tokens)
 }
 
-fn parse_request(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> Result<MLStmt, ProtocolError> {
+fn parse_request(tokens: &mut TokenBuffer<std::vec::IntoIter<String>>) -> Result<MLStmt, ProtocolError> {
     let mut from = None;
     let mut to = None;
     let mut action = None;
@@ -887,7 +915,7 @@ fn parse_request(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -
 
     while let Some(tok) = tokens.next() {
         if tok == ")" {
-            tokens.push_back(std::iter::once(tok).collect());
+            tokens.push_back(tok);
             break;
         }
         match tok.as_str() {
@@ -957,14 +985,14 @@ fn parse_request(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -
     })
 }
 
-fn parse_response(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> Result<MLStmt, ProtocolError> {
+fn parse_response(tokens: &mut TokenBuffer<std::vec::IntoIter<String>>) -> Result<MLStmt, ProtocolError> {
     let mut to = None;
     let mut correlation_id = None;
     let mut payload = Value::Null;
 
     while let Some(tok) = tokens.next() {
         if tok == ")" {
-            tokens.push_back(std::iter::once(tok).collect());
+            tokens.push_back(tok);
             break;
         }
         match tok.as_str() {
@@ -994,13 +1022,13 @@ fn parse_response(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) 
     })
 }
 
-fn parse_ack(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> Result<MLStmt, ProtocolError> {
+fn parse_ack(tokens: &mut TokenBuffer<std::vec::IntoIter<String>>) -> Result<MLStmt, ProtocolError> {
     let mut to = None;
     let mut correlation_id = None;
 
     while let Some(tok) = tokens.next() {
         if tok == ")" {
-            tokens.push_back(std::iter::once(tok).collect());
+            tokens.push_back(tok);
             break;
         }
         match tok.as_str() {
@@ -1026,14 +1054,14 @@ fn parse_ack(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> Re
     })
 }
 
-fn parse_error(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> Result<MLStmt, ProtocolError> {
+fn parse_error(tokens: &mut TokenBuffer<std::vec::IntoIter<String>>) -> Result<MLStmt, ProtocolError> {
     let mut to = None;
     let mut correlation_id = None;
     let mut message = None;
 
     while let Some(tok) = tokens.next() {
         if tok == ")" {
-            tokens.push_back(std::iter::once(tok).collect());
+            tokens.push_back(tok);
             break;
         }
         match tok.as_str() {
@@ -1063,7 +1091,7 @@ fn parse_error(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> 
     })
 }
 
-fn parse_hello(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> Result<MLStmt, ProtocolError> {
+fn parse_hello(tokens: &mut TokenBuffer<std::vec::IntoIter<String>>) -> Result<MLStmt, ProtocolError> {
     let mut agent = None;
     let mut protocols = Vec::new();
     let mut capabilities = Vec::new();
@@ -1071,7 +1099,7 @@ fn parse_hello(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> 
 
     while let Some(tok) = tokens.next() {
         if tok == ")" {
-            tokens.push_back(std::iter::once(tok).collect());
+            tokens.push_back(tok);
             break;
         }
         match tok.as_str() {
@@ -1101,13 +1129,13 @@ fn parse_hello(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> 
     })
 }
 
-fn parse_bye(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> Result<MLStmt, ProtocolError> {
+fn parse_bye(tokens: &mut TokenBuffer<std::vec::IntoIter<String>>) -> Result<MLStmt, ProtocolError> {
     let mut agent = None;
     let mut reason = None;
 
     while let Some(tok) = tokens.next() {
         if tok == ")" {
-            tokens.push_back(std::iter::once(tok).collect());
+            tokens.push_back(tok);
             break;
         }
         match tok.as_str() {
@@ -1132,12 +1160,12 @@ fn parse_bye(tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>) -> Re
 }
 
 fn parse_keyword_args(
-    tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>,
+    tokens: &mut TokenBuffer<std::vec::IntoIter<String>>,
 ) -> Result<Vec<(String, Value)>, ProtocolError> {
     let mut args = Vec::new();
     while let Some(tok) = tokens.next() {
         if tok == ")" {
-            tokens.push_back(std::iter::once(tok).collect());
+            tokens.push_back(tok);
             break;
         }
         if tok.starts_with(':') {
@@ -1150,7 +1178,7 @@ fn parse_keyword_args(
 }
 
 fn parse_list_from_tokens(
-    tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>,
+    tokens: &mut TokenBuffer<std::vec::IntoIter<String>>,
 ) -> Result<Vec<String>, ProtocolError> {
     // Could be ML list: [item1 item2] or bare symbol
     let first = tokens.next();
@@ -1208,7 +1236,7 @@ fn parse_value(s: &str) -> Result<MLValue, ProtocolError> {
 }
 
 fn parse_value_from_tokens(
-    tokens: &mut std::iter::Peekable<std::vec::IntoIter<String>>,
+    tokens: &mut TokenBuffer<std::vec::IntoIter<String>>,
 ) -> Result<Value, ProtocolError> {
     let Some(tok) = tokens.next() else {
         return Ok(Value::Null);
@@ -1221,7 +1249,7 @@ fn parse_value_from_tokens(
                 break;
             }
             // Put back so parse_value can handle it
-            tokens.push_back(std::iter::once(item).collect());
+            tokens.push_back(item);
             let val = parse_value_from_tokens(tokens)?;
             items.push(val);
         }

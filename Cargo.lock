@@ -1000,6 +1000,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "ml-protocol"
+version = "0.1.0"
+dependencies = [
+ "base64",
+ "chrono",
+ "serde",
+ "serde_json",
+ "sha2",
+ "thiserror 2.0.18",
+ "tokio-test",
+ "uuid",
+]
+
+[[package]]
 name = "ml-vm"
 version = "0.1.0"
 dependencies = [
